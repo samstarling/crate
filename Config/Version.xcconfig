@@ -1,4 +1,4 @@
-// The version is bumped by release-please from Conventional Commits; don't edit it by hand.
-// CI overrides CURRENT_PROJECT_VERSION with the workflow run number.
-MARKETING_VERSION = 0.0.0 // x-release-please-version
+// Local builds are versioned 0.0.0. Releases are versioned from git tags by semantic-release,
+// and CI passes the version and build number to xcodebuild.
+MARKETING_VERSION = 0.0.0
 CURRENT_PROJECT_VERSION = 1

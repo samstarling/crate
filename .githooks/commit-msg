@@ -1,5 +1,5 @@
 #!/bin/sh
-# Rejects commit messages that don't follow Conventional Commits, which release-please
+# Rejects commit messages that don't follow Conventional Commits, which semantic-release
 # reads to decide the next version. Enable with: git config core.hooksPath .githooks
 subject=$(head -n 1 "$1")
 

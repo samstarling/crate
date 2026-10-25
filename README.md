@@ -48,7 +48,7 @@ Changes go through pull requests; `main` is protected and can't be pushed to dir
 | `feat:` | `feat: show smart playlists` | minor |
 | `feat!:` or a `BREAKING CHANGE:` footer | `feat!: drop Rekordbox 6 support` | major |
 
-`docs:`, `refactor:`, `test:`, `ci:`, `chore:` and others don't trigger a release on their own. A check on each PR enforces the title format, and CI must pass before merging. To check your own commit messages locally too, run:
+`docs:`, `refactor:`, `test:`, `ci:`, `chore:` and others don't trigger a release on their own. Merging a PR with a releasable title ships it straight away. A check on each PR enforces the title format, and CI must pass before merging. To check your own commit messages locally too, run:
 
 ```sh
 git config core.hooksPath .githooks
@@ -56,11 +56,11 @@ git config core.hooksPath .githooks
 
 ## Releasing
 
-Releases are automated with [release-please](https://github.com/googleapis/release-please):
+Releases are automated with [semantic-release](https://github.com/semantic-release/semantic-release). Every merge to `main` that includes a `feat:` or `fix:` (or a breaking change) produces a release:
 
-1. Every merge to `main` updates an open **Release PR** with the next version number and a changelog.
-2. Merging that PR tags the release and creates a GitHub Release.
-3. CI then builds the app, signs it with Developer ID, notarizes and staples it, and attaches a `.dmg` and a `.zip`.
+1. The version is worked out from the commits since the last release, then tagged.
+2. A GitHub Release is created with notes generated from those commits.
+3. CI builds the app, signs it with Developer ID, notarizes and staples it, and attaches a `.dmg` and a `.zip`.
 
 The rules protecting `main` live in `.github/rulesets/main.json`. GitHub doesn't read that file automatically, so after changing it, re-apply it with:
 

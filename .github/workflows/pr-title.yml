@@ -1,7 +1,7 @@
 name: PR title
 
 # PRs are squash-merged with their title as the commit message, so the title is what
-# release-please reads to decide the next version.
+# semantic-release reads to decide the next version.
 on:
   pull_request:
     types: [opened, edited, synchronize, reopened]

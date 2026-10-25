@@ -1,49 +1,63 @@
 name: Release
 
-# release-please keeps a Release PR up to date from Conventional Commits on main. Merging it
-# tags the release and creates a GitHub Release, and the build job then attaches a signed,
-# notarized app. (Both live in one workflow because releases made with GITHUB_TOKEN don't
-# trigger other workflows.)
-#
-# release-please uses RELEASE_PLEASE_TOKEN, a fine-grained token for this repo with read/write
-# access to Contents, Issues and Pull requests, so that CI runs on its Release PR. PRs opened
-# with GITHUB_TOKEN don't trigger workflows, so the required checks would never pass.
+# On every merge to main, semantic-release works out the next version from the Conventional
+# Commits since the last tag, then creates the tag and a GitHub Release with generated notes.
+# If it released, the build job attaches a signed, notarized app. (Both live in one workflow
+# because releases made with GITHUB_TOKEN don't trigger other workflows.)
 on:
   push:
     branches: [main]
 
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 permissions:
   contents: write
+  issues: write
   pull-requests: write
 
 jobs:
-  release-please:
+  release:
     runs-on: ubuntu-latest
     outputs:
-      release_created: ${{ steps.release.outputs.release_created }}
-      tag_name: ${{ steps.release.outputs.tag_name }}
-      version: ${{ steps.release.outputs.version }}
+      tag_name: ${{ steps.tag.outputs.tag_name }}
+      version: ${{ steps.tag.outputs.version }}
     steps:
-      - uses: googleapis/release-please-action@v4
-        id: release
+      - uses: actions/checkout@v5
         with:
-          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
-          config-file: release-please-config.json
-          manifest-file: .release-please-manifest.json
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run semantic-release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: npx --yes semantic-release@24
+
+      # semantic-release tags HEAD when it releases; no tag means nothing was releasable.
+      - name: Find the new tag
+        id: tag
+        run: |
+          tag=$(git tag --points-at HEAD --list 'v*' | head -n 1)
+          echo "tag_name=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
 
   build:
-    needs: release-please
-    if: needs.release-please.outputs.release_created == 'true'
+    needs: release
+    if: needs.release.outputs.tag_name != ''
     runs-on: macos-26
     env:
-      VERSION: ${{ needs.release-please.outputs.version }}
-      TAG: ${{ needs.release-please.outputs.tag_name }}
+      VERSION: ${{ needs.release.outputs.version }}
+      TAG: ${{ needs.release.outputs.tag_name }}
       ASC_API_KEY_ID: ${{ secrets.ASC_API_KEY_ID }}
       ASC_API_ISSUER_ID: ${{ secrets.ASC_API_ISSUER_ID }}
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ needs.release-please.outputs.tag_name }}
+          ref: ${{ needs.release.outputs.tag_name }}
 
       # The runner context isn't available in job-level env, so temp paths are set here.
       - name: Set paths
