@@ -278,8 +278,8 @@ extension RekordboxLibrary {
 }
 
 /// The rows an edit changed in `master.db`, as they were before and after, so it can be reverted.
-public struct ChangeSet: Codable, Hashable, Sendable {
-    struct RowChange: Codable, Hashable, Sendable {
+public struct ChangeSet: Hashable, Sendable {
+    struct RowChange: Hashable, Sendable {
         let table: String
         let id: String
         /// The row before the edit. (Crate's edits don't insert rows, so this is always set.)
@@ -289,7 +289,7 @@ public struct ChangeSet: Codable, Hashable, Sendable {
     }
 
     /// A list of tracks, such as a playlist, that the edit renumbered.
-    struct ListReference: Codable, Hashable, Sendable {
+    struct ListReference: Hashable, Sendable {
         let table: String
         /// The column naming the list, and the list's ID; `nil` for a table that is one list.
         let column: String?

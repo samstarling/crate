@@ -1,12 +1,11 @@
-import CryptoKit
 import Foundation
 
 /// A change to a library that hasn't been written to `master.db` yet.
 ///
 /// Changes are kept as intentions ("remove these tracks") rather than database rows, so they can be
-/// shown in memory straight away, saved to disk, checked against a reloaded library, and written
-/// together when the user applies them.
-public enum PendingChange: Codable, Hashable, Sendable {
+/// shown in memory straight away, checked against a reloaded library, and written together when
+/// the user applies them.
+public enum PendingChange: Hashable, Sendable {
     /// Sets the colour of tracks, by colour ID (`nil` for none).
     case setColor(colorID: Int?, trackIDs: [Track.ID])
     /// Removes tracks from the collection, moving their audio files to the Trash when applied if asked.
@@ -45,7 +44,7 @@ public enum PendingChange: Codable, Hashable, Sendable {
 }
 
 /// A pending change as the user made it.
-public struct StagedChange: Codable, Identifiable, Hashable, Sendable {
+public struct StagedChange: Identifiable, Hashable, Sendable {
     public let id: UUID
     public let date: Date
     public private(set) var change: PendingChange
@@ -68,46 +67,6 @@ public struct StagedChange: Codable, Identifiable, Hashable, Sendable {
         staged.change = revalidated
         staged.summary = revalidated.summary(in: library)
         return staged
-    }
-}
-
-/// Each library's pending changes, saved so they survive quitting Crate.
-public struct PendingChangeStore: Sendable {
-    public let directory: URL
-
-    /// `~/Library/Application Support/Crate/Pending`.
-    public static let defaultDirectory = URL.applicationSupportDirectory.appending(path: "Crate/Pending", directoryHint: .isDirectory)
-
-    public init(directory: URL = PendingChangeStore.defaultDirectory) {
-        self.directory = directory
-    }
-
-    /// The pending changes for the library at `location`, oldest first. Empty if there are none or
-    /// they can't be read.
-    public func load(forLibraryAt location: URL) -> [StagedChange] {
-        guard let data = try? Data(contentsOf: file(for: location)) else { return [] }
-        // Default date encoding, unlike ISO 8601 strings, keeps fractions of a second, so changes load
-        // back exactly as they were saved.
-        return (try? JSONDecoder().decode([StagedChange].self, from: data)) ?? []
-    }
-
-    /// Saves the pending changes for the library at `location`, or removes the file if there are none.
-    public func save(_ changes: [StagedChange], forLibraryAt location: URL) throws {
-        let file = file(for: location)
-        guard !changes.isEmpty else {
-            if FileManager.default.fileExists(atPath: file.path) {
-                try FileManager.default.removeItem(at: file)
-            }
-            return
-        }
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        try JSONEncoder().encode(changes).write(to: file, options: .atomic)
-    }
-
-    /// One file per library, named by a hash of its path.
-    private func file(for location: URL) -> URL {
-        let digest = SHA256.hash(data: Data(location.standardizedFileURL.path.utf8))
-        return directory.appending(path: digest.map { String(format: "%02x", $0) }.joined() + ".json")
     }
 }
 

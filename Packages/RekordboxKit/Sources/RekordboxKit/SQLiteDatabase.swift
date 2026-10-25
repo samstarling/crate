@@ -10,8 +10,8 @@ final class SQLiteDatabase {
 
     private var handle: OpaquePointer?
 
-    /// A value in any of SQLite's storage classes. `Codable`, so rows can be saved and restored exactly.
-    enum Value: Hashable, Codable, Sendable {
+    /// A value in any of SQLite's storage classes, so rows can be recorded and restored exactly.
+    enum Value: Hashable, Sendable {
         case text(String)
         case int(Int)
         case real(Double)

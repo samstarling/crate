@@ -15,18 +15,17 @@ final class LibraryModel {
     private(set) var savedLibrary: RekordboxLibrary?
     /// The library with pending changes made, which is what Crate shows.
     private(set) var library: RekordboxLibrary?
-    /// Changes made in Crate but not yet applied to the library, oldest first.
+    /// Changes made in Crate but not yet applied to the library, oldest first. They're only kept
+    /// while Crate is open: quitting asks to apply or discard them.
     private(set) var pendingChanges: [StagedChange]
-    /// Changes applied to the open library, newest first.
-    private(set) var history: [JournalEntry]
+    /// Changes applied to the open library since Crate opened it, newest first, so they can be reverted.
+    private(set) var appliedChanges: [AppliedChange]
     private(set) var isLoading = false
     private(set) var isApplying = false
     var alert: AppAlert?
     /// The main window's undo manager, so changes can be undone with ⌘Z.
     @ObservationIgnored var undoManager: UndoManager?
 
-    @ObservationIgnored private let journal: Journal
-    @ObservationIgnored private let pendingStore: PendingChangeStore
     /// Libraries already backed up this session, so we only back up before the first write.
     @ObservationIgnored private var backedUpLibraries = Set<URL>()
     /// The most recent write, so the next one can wait for it.
@@ -35,19 +34,11 @@ final class LibraryModel {
     private static let locationDefaultsKey = "LibraryLocation"
     nonisolated private static let backupsToKeep = 10
 
-    init(
-        library: RekordboxLibrary? = nil,
-        pendingChanges: [StagedChange] = [],
-        history: [JournalEntry] = [],
-        journal: Journal = Journal(),
-        pendingStore: PendingChangeStore = PendingChangeStore()
-    ) {
+    init(library: RekordboxLibrary? = nil, pendingChanges: [StagedChange] = [], appliedChanges: [AppliedChange] = []) {
         self.savedLibrary = library
         self.library = library?.applying(pendingChanges.map(\.change))
         self.pendingChanges = pendingChanges
-        self.history = history
-        self.journal = journal
-        self.pendingStore = pendingStore
+        self.appliedChanges = appliedChanges
     }
 
     // MARK: Opening
@@ -60,8 +51,9 @@ final class LibraryModel {
         await open(folder)
     }
 
-    /// Opens (or reloads) a library, along with any changes still pending for it. Pending changes
-    /// are checked against the library as loaded, dropping any tracks that are no longer in it.
+    /// Opens a library, or reloads the open one. Reloading keeps pending changes, checked against the
+    /// library as loaded (dropping any tracks that are no longer in it); opening a different library
+    /// starts afresh.
     func open(_ folder: URL) async {
         isLoading = true
         defer { isLoading = false }
@@ -69,15 +61,15 @@ final class LibraryModel {
             let saved = try await Task.detached(priority: .userInitiated) {
                 try RekordboxLibrary.load(from: folder)
             }.value
-            let stored = pendingStore.load(forLibraryAt: folder)
-            let pending = stored.compactMap { $0.revalidated(against: saved) }
-            savedLibrary = saved
-            pendingChanges = pending
-            library = saved.applying(pending.map(\.change))
-            history = journal.entries(forLibraryAt: folder)
-            if pending != stored {
-                savePendingChanges()
+            let isReload = savedLibrary?.location.standardizedFileURL == folder.standardizedFileURL
+            if !isReload {
+                pendingChanges = []
+                appliedChanges = []
+                undoManager?.removeAllActions(withTarget: self)
             }
+            pendingChanges = pendingChanges.compactMap { $0.revalidated(against: saved) }
+            savedLibrary = saved
+            library = saved.applying(pendingChanges.map(\.change))
             UserDefaults.standard.set(folder.path, forKey: Self.locationDefaultsKey)
         } catch {
             alert = AppAlert(title: "Couldn\u{2019}t Open Library", message: error.localizedDescription)
@@ -101,7 +93,36 @@ final class LibraryModel {
 
         guard panel.runModal() == .OK, let url = panel.url else { return }
         let folder = url.hasDirectoryPath ? url : url.deletingLastPathComponent()
+        if folder.standardizedFileURL != savedLibrary?.location.standardizedFileURL {
+            guard await askToApplyPendingChanges(before: "opening another library") else { return }
+        }
         await open(folder)
+    }
+
+    /// If there are pending changes, asks whether to apply or discard them before `action` (for
+    /// example "quitting"), and does so. Returns whether to go ahead: `false` if the user cancels,
+    /// or if applying fails (then `alert` says why and the changes stay pending).
+    func askToApplyPendingChanges(before action: String) async -> Bool {
+        guard !pendingChanges.isEmpty else { return true }
+        let count = pendingChanges.count
+        let alert = NSAlert()
+        alert.messageText = "Apply \(count == 1 ? "1 change" : "\(count) changes") to your Rekordbox library before \(action)?"
+        alert.informativeText = count == 1
+            ? "If you don\u{2019}t apply it, it\u{2019}ll be lost."
+            : "If you don\u{2019}t apply them, they\u{2019}ll be lost."
+        alert.addButton(withTitle: "Apply")
+        alert.addButton(withTitle: "Discard")
+        alert.addButton(withTitle: "Cancel")
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            await applyPendingChanges()
+            return pendingChanges.isEmpty
+        case .alertSecondButtonReturn:
+            discardAllPendingChanges()
+            return true
+        default:
+            return false
+        }
     }
 
     // MARK: Pending changes
@@ -122,7 +143,6 @@ final class LibraryModel {
         let staged = StagedChange(change, summary: change.summary(in: library))
         pendingChanges.append(staged)
         self.library = library.applying([change])
-        savePendingChanges()
         undoManager?.registerUndo(withTarget: self) { model in model.discard(staged) }
         undoManager?.setActionName(actionName)
     }
@@ -131,26 +151,12 @@ final class LibraryModel {
     func discard(_ change: StagedChange) {
         pendingChanges.removeAll { $0.id == change.id }
         library = savedLibrary?.applying(pendingChanges.map(\.change))
-        savePendingChanges()
     }
 
     func discardAllPendingChanges() {
         pendingChanges = []
         library = savedLibrary
-        savePendingChanges()
         undoManager?.removeAllActions(withTarget: self)
-    }
-
-    private func savePendingChanges() {
-        guard let location = savedLibrary?.location else { return }
-        do {
-            try pendingStore.save(pendingChanges, forLibraryAt: location)
-        } catch {
-            alert = AppAlert(
-                title: "Couldn\u{2019}t Save Pending Changes",
-                message: "Your changes are still pending, but would be lost if Crate quit. \(error.localizedDescription)"
-            )
-        }
     }
 
     // MARK: Applying
@@ -179,22 +185,21 @@ final class LibraryModel {
             }
             let (trashed, failures) = await Task.detached(priority: .userInitiated) { Self.moveToTrash(files) }.value
 
-            let entry = JournalEntry(
+            let applied = AppliedChange(
                 summary: staged.count == 1 ? staged[0].summary : "\(staged.count) changes",
                 items: staged.count == 1 ? [] : staged.map(\.summary),
                 libraryLocation: location,
                 changes: changeSet,
                 trashedFiles: trashed
             )
-            record(entry)
+            appliedChanges.insert(applied, at: 0)
             pendingChanges = []
-            savePendingChanges()
             await reload()
 
             // Undoing now means reverting what was applied, not discarding pending changes.
             undoManager?.removeAllActions(withTarget: self)
             undoManager?.registerUndo(withTarget: self) { model in
-                Task { await model.undo(entry) }
+                Task { await model.undo(applied) }
             }
             undoManager?.setActionName("Apply Changes")
 
@@ -215,34 +220,21 @@ final class LibraryModel {
         }
     }
 
-    /// Saves a journal entry for applied changes.
-    private func record(_ entry: JournalEntry) {
-        do {
-            try journal.save(entry)
-        } catch {
-            alert = AppAlert(
-                title: "Couldn\u{2019}t Record Changes",
-                message: "Your changes were applied, but couldn\u{2019}t be recorded, so they can\u{2019}t be reverted. \(error.localizedDescription)"
-            )
-        }
-        history.insert(entry, at: 0)
-    }
-
     // MARK: Reverting
 
     /// Reverts applied changes, putting back everything they changed in the library and any files
     /// moved to the Trash. Throws `RekordboxLibrary.CannotRevert` if something they changed has
     /// been changed again since.
-    func revert(_ entry: JournalEntry) async throws {
-        // Use the latest version of the entry: it may have been reverted since this was asked for.
-        let entry = history.first { $0.id == entry.id } ?? entry
-        guard !entry.isReverted else { return }
-        _ = try await write(to: entry.libraryLocation) { try RekordboxLibrary.revert(entry.changes, in: entry.libraryLocation) }
+    func revert(_ applied: AppliedChange) async throws {
+        // Use the latest version: it may have been reverted since this was asked for.
+        guard let index = appliedChanges.firstIndex(where: { $0.id == applied.id }), !appliedChanges[index].isReverted else { return }
+        let applied = appliedChanges[index]
+        _ = try await write(to: applied.libraryLocation) { try RekordboxLibrary.revert(applied.changes, in: applied.libraryLocation) }
 
-        let failures = await Task.detached(priority: .userInitiated) { Self.restoreFromTrash(entry.trashedFiles) }.value
-        var reverted = entry
-        reverted.revertedAt = .now
-        try? journal.save(reverted)
+        let failures = await Task.detached(priority: .userInitiated) { Self.restoreFromTrash(applied.trashedFiles) }.value
+        if let index = appliedChanges.firstIndex(where: { $0.id == applied.id }) {
+            appliedChanges[index].revertedAt = .now
+        }
         await reload()
         if !failures.isEmpty {
             throw RevertError.filesNotRestored(failures)
@@ -250,9 +242,9 @@ final class LibraryModel {
     }
 
     /// Reverts applied changes from Edit ▸ Undo, reporting any problem.
-    private func undo(_ entry: JournalEntry) async {
+    private func undo(_ applied: AppliedChange) async {
         do {
-            try await revert(entry)
+            try await revert(applied)
         } catch {
             alert = AppAlert(title: "Couldn\u{2019}t Undo", message: error.localizedDescription)
         }

@@ -54,12 +54,6 @@ struct RevertTests {
         #expect(entry.after?["TrackNo"] == .int(1))
     }
 
-    @Test func changeSetsSurviveBeingSaved() throws {
-        let changes = try removeNightDrive()
-        let decoded = try JSONDecoder().decode(ChangeSet.self, from: JSONEncoder().encode(changes))
-        #expect(decoded == changes)
-    }
-
     // MARK: Reverting
 
     @Test func revertingARemovalRestoresTheLibraryExactly() throws {
@@ -146,57 +140,5 @@ struct RevertTests {
         let changes = try removeNightDrive()
         let count = try RekordboxLibrary.revert(changes, in: fixture.folder)
         try RekordboxLibrary.saveColor(nil, forTrackIDs: [LibraryFixture.nightDrive], in: fixture.folder, expectedUpdateCount: count)
-    }
-}
-
-@Suite("Journal")
-struct JournalTests {
-    let directory = FileManager.default.temporaryDirectory.appending(path: "JournalTests-\(UUID().uuidString)", directoryHint: .isDirectory)
-
-    private func entry(_ summary: String, library: String = "/Libraries/A", date: Date) -> JournalEntry {
-        JournalEntry(
-            summary: summary,
-            libraryLocation: URL(filePath: library, directoryHint: .isDirectory),
-            changes: ChangeSet(rows: [], lists: [], updateCount: 1),
-            date: date
-        )
-    }
-
-    @Test func savesAndLoadsEntriesNewestFirst() throws {
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let journal = Journal(directory: directory)
-        try journal.save(entry("Older", date: Date(timeIntervalSince1970: 1)))
-        try journal.save(entry("Newer", date: Date(timeIntervalSince1970: 2)))
-        try journal.save(entry("Elsewhere", library: "/Libraries/B", date: Date(timeIntervalSince1970: 3)))
-
-        let entries = journal.entries(forLibraryAt: URL(filePath: "/Libraries/A", directoryHint: .isDirectory))
-        #expect(entries.map(\.summary) == ["Newer", "Older"])
-    }
-
-    @Test func savingAgainUpdatesTheEntry() throws {
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let journal = Journal(directory: directory)
-        var saved = entry("Removing a track", date: .now)
-        try journal.save(saved)
-        saved.revertedAt = .now
-        saved.trashedFiles = [TrashedFile(original: URL(filePath: "/Music/a.mp3"), inTrash: URL(filePath: "/Trash/a.mp3"))]
-        try journal.save(saved)
-
-        let entries = journal.entries(forLibraryAt: saved.libraryLocation)
-        #expect(entries.count == 1)
-        #expect(entries.first?.isReverted == true)
-        #expect(entries.first?.trashedFiles == saved.trashedFiles)
-    }
-
-    @Test func unreadableFilesAreSkipped() throws {
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let journal = Journal(directory: directory)
-        try journal.save(entry("Fine", date: .now))
-        try Data("not json".utf8).write(to: directory.appending(path: "broken.json"))
-        #expect(journal.entries(forLibraryAt: URL(filePath: "/Libraries/A", directoryHint: .isDirectory)).map(\.summary) == ["Fine"])
-    }
-
-    @Test func aMissingDirectoryHasNoEntries() {
-        #expect(Journal(directory: directory).entries(forLibraryAt: URL(filePath: "/Libraries/A")).isEmpty)
     }
 }

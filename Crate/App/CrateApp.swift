@@ -9,8 +9,10 @@ import SwiftUI
 
 @main
 struct CrateApp: App {
-    @State private var model = LibraryModel()
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var player = PlayerModel()
+
+    private var model: LibraryModel { appDelegate.model }
 
     var body: some Scene {
         Window("Crate", id: "main") {

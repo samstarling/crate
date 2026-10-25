@@ -6,23 +6,23 @@ struct ChangesView: View {
     @Environment(LibraryModel.self) private var model
     @State private var selection = Set<Row>()
     /// The entry being reverted, to show progress in its row.
-    @State private var reverting: JournalEntry.ID?
+    @State private var reverting: AppliedChange.ID?
     @State private var revertError: String?
     @State private var isConfirmingDiscardAll = false
 
     /// A row in the list: a pending change or an applied one.
     enum Row: Hashable {
         case pending(StagedChange.ID)
-        case applied(JournalEntry.ID)
+        case applied(AppliedChange.ID)
     }
 
     var body: some View {
         Group {
-            if model.pendingChanges.isEmpty && model.history.isEmpty {
+            if model.pendingChanges.isEmpty && model.appliedChanges.isEmpty {
                 ContentUnavailableView(
                     "No Changes",
                     systemImage: "clock.arrow.circlepath",
-                    description: Text("Colours you set and tracks you remove wait here until you apply them to your Rekordbox library.")
+                    description: Text("Colours you set and tracks you remove wait here until you apply them to your Rekordbox library. Until you quit Crate, you can revert what you\u{2019}ve applied.")
                 )
             } else {
                 list
@@ -58,9 +58,9 @@ struct ChangesView: View {
                     }
                 }
             }
-            if !model.history.isEmpty {
-                Section("Applied") {
-                    ForEach(model.history) { entry in
+            if !model.appliedChanges.isEmpty {
+                Section("Applied This Session") {
+                    ForEach(model.appliedChanges) { entry in
                         appliedRow(for: entry)
                             .tag(Row.applied(entry.id))
                     }
@@ -127,7 +127,7 @@ struct ChangesView: View {
         }
     }
 
-    private func appliedRow(for entry: JournalEntry) -> some View {
+    private func appliedRow(for entry: AppliedChange) -> some View {
         HStack(alignment: .firstTextBaseline) {
             Label {
                 VStack(alignment: .leading, spacing: 2) {
@@ -153,7 +153,7 @@ struct ChangesView: View {
         }
     }
 
-    private func details(for entry: JournalEntry) -> String {
+    private func details(for entry: AppliedChange) -> String {
         var details = "Applied " + entry.date.formatted(.relative(presentation: .named))
         if !entry.trashedFiles.isEmpty {
             let files = entry.trashedFiles.count == 1 ? "1 file" : "\(entry.trashedFiles.count) files"
@@ -169,8 +169,8 @@ struct ChangesView: View {
     }
 
     /// The applied entry selected, if exactly one is and it can be reverted.
-    private func revertibleEntry(in rows: Set<Row>) -> JournalEntry? {
-        let entries = model.history.filter { rows.contains(.applied($0.id)) }
+    private func revertibleEntry(in rows: Set<Row>) -> AppliedChange? {
+        let entries = model.appliedChanges.filter { rows.contains(.applied($0.id)) }
         guard entries.count == 1, let entry = entries.first, !entry.isReverted, reverting == nil, !model.isApplying else { return nil }
         return entry
     }
@@ -182,7 +182,7 @@ struct ChangesView: View {
         selection.subtract(changes.map { .pending($0.id) })
     }
 
-    private func revert(_ entry: JournalEntry) {
+    private func revert(_ entry: AppliedChange) {
         reverting = entry.id
         Task {
             defer { reverting = nil }
@@ -206,6 +206,6 @@ struct ChangesView: View {
     NavigationStack {
         ChangesView()
     }
-    .environment(LibraryModel(library: .preview, journal: .preview, pendingStore: .preview))
+    .environment(LibraryModel(library: .preview))
     .frame(width: 700, height: 400)
 }

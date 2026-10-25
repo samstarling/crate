@@ -127,30 +127,4 @@ struct PendingChangeTests {
     func summaries(change: PendingChange, summary: String) {
         #expect(change.summary(in: library) == summary)
     }
-
-    // MARK: Saving
-
-    @Test func pendingChangesAreSavedPerLibrary() throws {
-        let store = PendingChangeStore(directory: fixture.folder.appending(path: "Pending"))
-        let a = URL(filePath: "/Libraries/A", directoryHint: .isDirectory)
-        let b = URL(filePath: "/Libraries/B", directoryHint: .isDirectory)
-        let changes = [StagedChange(.setColor(colorID: 1, trackIDs: ["1"]), summary: "Set a track to Rhythmic")]
-        try store.save(changes, forLibraryAt: a)
-
-        #expect(store.load(forLibraryAt: a) == changes)
-        #expect(store.load(forLibraryAt: b).isEmpty)
-
-        try store.save([], forLibraryAt: a)
-        #expect(store.load(forLibraryAt: a).isEmpty)
-        #expect(try FileManager.default.contentsOfDirectory(atPath: store.directory.path).isEmpty)
-    }
-
-    @Test func journalEntriesFromBeforeBatchingStillLoad() throws {
-        let json = #"{"id":"6B1C1F43-8E9A-4E6E-9A5F-1D9E2C3B4A5D","date":"2026-10-25T10:00:00Z","summary":"Removing a track","libraryLocation":"file:///Libraries/A/","changes":{"rows":[],"lists":[],"updateCount":5},"trashedFiles":[]}"#
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        let entry = try decoder.decode(JournalEntry.self, from: Data(json.utf8))
-        #expect(entry.summary == "Removing a track")
-        #expect(entry.items.isEmpty)
-    }
 }
