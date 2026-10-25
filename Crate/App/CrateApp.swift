@@ -11,6 +11,7 @@ import SwiftUI
 struct CrateApp: App {
     @State private var model = LibraryModel()
     @State private var player = PlayerModel()
+    @AppStorage(TagInspector.visibilityKey) private var showsTagInspector = false
 
     var body: some Scene {
         Window("Crate", id: "main") {
@@ -26,6 +27,10 @@ struct CrateApp: App {
                 Button("Reload Library") { Task { await model.reload() } }
                     .keyboardShortcut("r")
                     .disabled(model.library == nil || model.isLoading)
+            }
+            CommandGroup(after: .sidebar) {
+                Button(showsTagInspector ? "Hide Tags" : "Show Tags") { showsTagInspector.toggle() }
+                    .keyboardShortcut("i", modifiers: [.command, .option])
             }
             CommandMenu("Controls") {
                 Button(player.isPlaying ? "Pause" : "Play") { player.togglePlayPause() }
