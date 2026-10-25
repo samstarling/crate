@@ -40,7 +40,7 @@ struct ChangesView: View {
     private var list: some View {
         List(selection: $selection) {
             if !model.pendingChanges.isEmpty {
-                Section("Waiting to Be Applied") {
+                Section("Pending") {
                     ForEach(model.pendingChanges) { change in
                         pendingRow(for: change)
                             .tag(Row.pending(change.id))
@@ -48,7 +48,7 @@ struct ChangesView: View {
                 }
             }
             if !model.appliedChanges.isEmpty {
-                Section("Applied This Session") {
+                Section("Applied") {
                     ForEach(model.appliedChanges) { entry in
                         appliedRow(for: entry)
                             .tag(Row.applied(entry.id))
