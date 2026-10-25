@@ -25,8 +25,7 @@ final class LibraryFixture {
     let database: SQLiteDatabase
 
     init() throws {
-        folder = FileManager.default.temporaryDirectory
-            .appending(path: "RekordboxKitTests-\(UUID().uuidString)", directoryHint: .isDirectory)
+        folder = Self.temporaryFolder()
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         database = try SQLiteDatabase(url: folder.appending(path: "master.db"), key: RekordboxLibrary.databaseKey, access: .create)
 
@@ -35,6 +34,26 @@ final class LibraryFixture {
         }
         try database.execute(String(contentsOf: schemaURL, encoding: .utf8))
         try populate()
+    }
+
+    /// A copy of a library Rekordbox made itself (`Fixtures/Library`); see `RekordboxMadeLibrary`
+    /// for what's in it.
+    static func rekordboxMade() throws -> LibraryFixture {
+        guard let source = Bundle.module.url(forResource: "Library", withExtension: nil, subdirectory: "Fixtures") else {
+            throw SQLiteDatabase.Error(message: "Fixtures/Library is missing from the test bundle.")
+        }
+        let folder = temporaryFolder()
+        try FileManager.default.copyItem(at: source, to: folder)
+        return try LibraryFixture(folder: folder)
+    }
+
+    private init(folder: URL) throws {
+        self.folder = folder
+        database = try SQLiteDatabase(url: folder.appending(path: "master.db"), key: RekordboxLibrary.databaseKey, access: .readWrite)
+    }
+
+    private static func temporaryFolder() -> URL {
+        FileManager.default.temporaryDirectory.appending(path: "RekordboxKitTests-\(UUID().uuidString)", directoryHint: .isDirectory)
     }
 
     deinit {
@@ -62,6 +81,26 @@ final class LibraryFixture {
         var result = 0
         try database.query(sql) { result = $0.int(0) }
         return result
+    }
+
+    /// Every row of every table, without the columns an edit or revert always refreshes
+    /// (`rb_local_usn`, `updated_at`) and without the update counter, so two states of the library
+    /// can be compared for what actually matters.
+    func contents() throws -> [String: Set<[String: SQLiteDatabase.Value]>] {
+        var tables: [String] = []
+        try database.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name != 'agentRegistry'") { tables.append($0.string(0)!) }
+        var contents: [String: Set<[String: SQLiteDatabase.Value]>] = [:]
+        for table in tables {
+            var rows = Set<[String: SQLiteDatabase.Value]>()
+            try database.query("SELECT * FROM \(table)") { row in
+                var values = row.values()
+                values["rb_local_usn"] = nil
+                values["updated_at"] = nil
+                rows.insert(values)
+            }
+            contents[table] = rows
+        }
+        return contents
     }
 
     /// The content IDs in an ordered list, by `TrackNo`, with their positions.

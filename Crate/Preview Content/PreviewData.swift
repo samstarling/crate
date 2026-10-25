@@ -100,12 +100,41 @@ extension Waveform {
     }
 }
 
+extension StagedChange {
+    static let previews: [StagedChange] = [
+        PendingChange.setColor(colorID: 8, trackIDs: [Track.previews[0].id]),
+        PendingChange.remove(trackIDs: [Track.previews[5].id], movingFilesToTrash: true),
+    ].map { StagedChange($0, summary: $0.summary(in: .preview)) }
+}
+
+extension AppliedChange {
+    static let previews: [AppliedChange] = {
+        let location = RekordboxLibrary.preview.location
+        var reverted = AppliedChange(summary: "Set 2 tracks to Melodic", libraryLocation: location, pendingChanges: [], changes: .none, date: .now.addingTimeInterval(-3_600))
+        reverted.revertedAt = .now.addingTimeInterval(-3_000)
+        return [
+            AppliedChange(
+                summary: "3 changes",
+                items: ["Set \u{201C}Copper Sun\u{201D} to Moody", "Clear the colour of 2 tracks", "Remove \u{201C}Old Demo\u{201D} and move its file to the Trash"],
+                libraryLocation: location, pendingChanges: [], changes: .none,
+                trashedFiles: [TrashedFile(original: URL(filePath: "/Music/Old Demo.mp3"), inTrash: URL(filePath: "/Users/me/.Trash/Old Demo.mp3"))],
+                date: .now.addingTimeInterval(-300)
+            ),
+            reverted,
+        ]
+    }()
+}
+
 /// Supplies a sample library and a paused player: `#Preview(traits: .sampleData)`.
 struct SampleData: PreviewModifier {
     static func makeSharedContext() async throws -> (LibraryModel, PlayerModel) {
         let track = Track.previews[0]
         let player = PlayerModel.preview(track, waveform: .preview(duration: track.duration, bpm: track.bpm), at: 74)
-        return (LibraryModel(library: .preview), player)
+        let session = LibrarySession(
+            library: .preview, pendingChanges: StagedChange.previews, appliedChanges: AppliedChange.previews, files: .none
+        )
+        let model = LibraryModel(session: session, files: .none)
+        return (model, player)
     }
 
     func body(content: Content, context: (LibraryModel, PlayerModel)) -> some View {

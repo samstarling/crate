@@ -3,8 +3,8 @@ import Foundation
 /// A snapshot of a Rekordbox 6/7 library, read from its `master.db`.
 public struct RekordboxLibrary: Sendable {
     public let location: URL
-    public private(set) var tracks: [Track]
-    public private(set) var tracksByID: [String: Track]
+    public internal(set) var tracks: [Track]
+    public internal(set) var tracksByID: [String: Track]
     public let playlists: [Playlist]
     /// The eight track colours, in Rekordbox's order.
     public let colors: [TrackColor]
@@ -16,7 +16,7 @@ public struct RekordboxLibrary: Sendable {
     /// For each sortable key path, every track's rank (indexed by `Track.libraryIndex`) in ascending
     /// order. Equal values share a rank. Computed once at load so sorting is just integer comparisons.
     /// (Key path literals capture nothing, so sharing them across threads is safe.)
-    nonisolated(unsafe) private(set) var sortRanks: [PartialKeyPath<Track>: [Int]]
+    nonisolated(unsafe) var sortRanks: [PartialKeyPath<Track>: [Int]]
 
     public init(
         location: URL,
@@ -84,7 +84,7 @@ public struct RekordboxLibrary: Sendable {
         )
     }
 
-    private static func ranks<Value>(
+    static func ranks<Value>(
         _ tracks: [Track], _ keyPath: KeyPath<Track, Value>, by areInIncreasingOrder: (Value, Value) -> Bool
     ) -> [Int] {
         let values = tracks.map { $0[keyPath: keyPath] }
@@ -272,221 +272,6 @@ public struct RekordboxLibrary: Sendable {
             guard seen.insert(id).inserted else { return nil }
             return tracksByID[id]
         }
-    }
-
-    // MARK: Editing
-
-    /// Writes a new colour (or none) for the given tracks to `master.db` in `folder`.
-    /// - Returns: The library's new update count.
-    /// - Throws: `LibraryChanged` if the library's update count isn't `expectedUpdateCount`.
-    @discardableResult
-    public static func saveColor(
-        _ color: TrackColor?, forTrackIDs ids: [Track.ID], in folder: URL, expectedUpdateCount: Int?
-    ) throws -> Int {
-        try edit(in: folder, expectedUpdateCount: expectedUpdateCount) { database, nextUpdateCount, now in
-            for id in ids {
-                try database.execute(
-                    "UPDATE djmdContent SET ColorID = ?, rb_local_usn = ?, updated_at = ? WHERE ID = ?",
-                    [.text(String(color?.id ?? 0)), .int(nextUpdateCount()), .text(now), .text(id)]
-                )
-            }
-        }
-    }
-
-    /// Tables holding ordered lists of tracks, and the column naming which list (`nil` for a single
-    /// list). When a track is removed, later tracks in the same list move up to close the gap.
-    private static let orderedTrackTables: [(table: String, list: String?)] = [
-        ("djmdSongPlaylist", "PlaylistID"),
-        ("djmdSongHistory", "HistoryID"),
-        ("djmdSongMyTag", "MyTagID"),
-        ("djmdSongRelatedTracks", "RelatedTracksID"),
-        ("djmdSongSampler", "SamplerID"),
-        ("djmdSongHotCueBanklist", "HotCueBanklistID"),
-        ("djmdCloudExportSongPlaylist", "CloudExportPlaylistID"),
-        ("djmdSongTagList", nil),
-    ]
-
-    /// Other rows that belong to a track, by table and the column holding the track's ID.
-    private static let trackDetailTables: [(table: String, column: String)] = [
-        ("djmdCue", "ContentID"),
-        ("contentCue", "ContentID"),
-        ("contentFile", "ContentID"),
-        ("djmdMixerParam", "ContentID"),
-        ("djmdActiveCensor", "ContentID"),
-        ("contentActiveCensor", "ContentID"),
-        ("djmdRecommendLike", "ContentID1"),
-        ("djmdRecommendLike", "ContentID2"),
-    ]
-
-    /// Columns of `djmdContent` that refer to an artist. Albums refer to one too, as their album
-    /// artist. (Lyricist doesn't seem to hold artist IDs, but counting it can only keep an artist.)
-    private static let trackArtistColumns = ["ArtistID", "RemixerID", "OrgArtistID", "ComposerID", "Lyricist"]
-
-    /// Removes tracks from the collection in `master.db` in `folder`, along with every row that
-    /// refers to them: playlist and history entries, cues, My Tags and so on.
-    ///
-    /// This mirrors what Rekordbox does: rows are deleted rather than marked deleted, and later
-    /// tracks in each numbered list are renumbered. Artists, albums and genres that only the removed
-    /// tracks used are deleted too. The audio files and Rekordbox's analysis files are left on disk.
-    /// - Returns: The library's new update count.
-    /// - Throws: `LibraryChanged` if the library's update count isn't `expectedUpdateCount`.
-    @discardableResult
-    public static func removeTracks(withIDs ids: [Track.ID], in folder: URL, expectedUpdateCount: Int?) throws -> Int {
-        try edit(in: folder, expectedUpdateCount: expectedUpdateCount) { database, nextUpdateCount, now in
-            var artists = Set<String>(), albums = Set<String>(), genres = Set<String>()
-            for id in ids {
-                try database.query(
-                    "SELECT \(trackArtistColumns.joined(separator: ", ")), AlbumID, GenreID FROM djmdContent WHERE ID = ?", [.text(id)]
-                ) { row in
-                    for column in trackArtistColumns.indices {
-                        if let artist = row.string(Int32(column)), !artist.isEmpty { artists.insert(artist) }
-                    }
-                    if let album = row.string(Int32(trackArtistColumns.count)), !album.isEmpty { albums.insert(album) }
-                    if let genre = row.string(Int32(trackArtistColumns.count + 1)), !genre.isEmpty { genres.insert(genre) }
-                }
-
-                for (table, list) in orderedTrackTables {
-                    // Some lists (My Tags, for one) aren't numbered: TrackNo is NULL, so there's no gap to close.
-                    var positions: [(list: String, trackNo: Int)] = []
-                    try database.query(
-                        "SELECT \(list ?? "''"), TrackNo FROM \(table) WHERE ContentID = ? AND TrackNo IS NOT NULL", [.text(id)]
-                    ) { row in
-                        positions.append((row.string(0) ?? "", row.int(1)))
-                    }
-                    try database.execute("DELETE FROM \(table) WHERE ContentID = ?", [.text(id)])
-
-                    // Close gaps from the end, so a track listed twice in one list renumbers correctly.
-                    for position in positions.sorted(by: { $0.trackNo > $1.trackNo }) {
-                        let sameList = list.map { "\($0) = ? AND " } ?? ""
-                        let listValue: [SQLiteDatabase.Value] = list == nil ? [] : [.text(position.list)]
-                        try database.execute(
-                            "UPDATE \(table) SET TrackNo = TrackNo - 1, rb_local_usn = ?, updated_at = ? WHERE \(sameList)TrackNo > ?",
-                            [.int(nextUpdateCount()), .text(now)] + listValue + [.int(position.trackNo)]
-                        )
-                    }
-                }
-                for (table, column) in trackDetailTables {
-                    try database.execute("DELETE FROM \(table) WHERE \(column) = ?", [.text(id)])
-                }
-                try database.execute("DELETE FROM djmdContent WHERE ID = ?", [.text(id)])
-            }
-            try deleteUnused(albums: albums, artists: artists, genres: genres, in: database)
-        }
-    }
-
-    /// Deletes those of the given albums, artists and genres that no track refers to any more, the
-    /// way Rekordbox tidies up after removing tracks. Albums go first, so an album artist only used
-    /// by a deleted album goes too. Unused rows the removed tracks didn't refer to are left alone.
-    private static func deleteUnused(albums: Set<String>, artists: Set<String>, genres: Set<String>, in database: SQLiteDatabase) throws {
-        var artists = artists
-        for album in albums {
-            var stillUsed = false
-            try database.query("SELECT 1 FROM djmdContent WHERE AlbumID = ? LIMIT 1", [.text(album)]) { _ in stillUsed = true }
-            guard !stillUsed else { continue }
-            try database.query("SELECT AlbumArtistID FROM djmdAlbum WHERE ID = ?", [.text(album)]) { row in
-                if let artist = row.string(0), !artist.isEmpty { artists.insert(artist) }
-            }
-            try database.execute("DELETE FROM djmdAlbum WHERE ID = ?", [.text(album)])
-        }
-
-        let artistReferences = trackArtistColumns.map { "SELECT 1 FROM djmdContent WHERE \($0) = ?1" }
-            + ["SELECT 1 FROM djmdAlbum WHERE AlbumArtistID = ?1"]
-        for artist in artists {
-            var stillUsed = false
-            try database.query("SELECT EXISTS (\(artistReferences.joined(separator: " UNION ALL ")))", [.text(artist)]) { row in
-                stillUsed = row.int(0) == 1
-            }
-            if !stillUsed {
-                try database.execute("DELETE FROM djmdArtist WHERE ID = ?", [.text(artist)])
-            }
-        }
-
-        for genre in genres {
-            var stillUsed = false
-            try database.query("SELECT 1 FROM djmdContent WHERE GenreID = ? LIMIT 1", [.text(genre)]) { _ in stillUsed = true }
-            if !stillUsed {
-                try database.execute("DELETE FROM djmdGenre WHERE ID = ?", [.text(genre)])
-            }
-        }
-    }
-
-    /// Thrown when an edit is refused because the library has changed since the caller loaded it,
-    /// for example in Rekordbox, so the edit may be based on out-of-date information.
-    public struct LibraryChanged: LocalizedError {
-        public let expectedUpdateCount: Int?
-        public let actualUpdateCount: Int
-
-        public var errorDescription: String? {
-            "Your Rekordbox library has changed since Crate loaded it, so Crate didn\u{2019}t save, to avoid overwriting those changes."
-        }
-    }
-
-    /// Runs `body` in a transaction on `master.db`, tracking changes the way Rekordbox does.
-    ///
-    /// The transaction holds SQLite's write lock from the start, so nothing can change the library
-    /// between checking `expectedUpdateCount` and writing.
-    ///
-    /// Each edited row should get a fresh `rb_local_usn` from `nextUpdateCount()`, which advances
-    /// Rekordbox's `localUpdateCount` counter, and `now` as its `updated_at`, so Rekordbox sees the
-    /// change as a local edit. Rekordbox must not be running, or it may overwrite the change.
-    ///
-    /// - Returns: The new update count.
-    private static func edit(
-        in folder: URL,
-        expectedUpdateCount: Int?,
-        _ body: (SQLiteDatabase, _ nextUpdateCount: () -> Int, _ now: String) throws -> Void
-    ) throws -> Int {
-        let database = try SQLiteDatabase(url: folder.appending(path: "master.db"), key: databaseKey, access: .readWrite)
-        let now = timestampFormatter.string(from: .now)
-
-        return try database.transaction {
-            guard var updateCount = try readUpdateCount(from: database) else {
-                throw SQLiteDatabase.Error(message: "This library has no update counter, so Crate can't safely edit it.")
-            }
-            guard updateCount == expectedUpdateCount else {
-                throw LibraryChanged(expectedUpdateCount: expectedUpdateCount, actualUpdateCount: updateCount)
-            }
-
-            try body(database, {
-                updateCount += 1
-                return updateCount
-            }, now)
-
-            try database.execute(
-                "UPDATE agentRegistry SET int_1 = ?, updated_at = ? WHERE registry_id = 'localUpdateCount'",
-                [.int(updateCount), .text(now)]
-            )
-            return updateCount
-        }
-    }
-
-    private static func readUpdateCount(from database: SQLiteDatabase) throws -> Int? {
-        var updateCount: Int?
-        try database.query("SELECT int_1 FROM agentRegistry WHERE registry_id = 'localUpdateCount'") { row in
-            updateCount = row.int(0)
-        }
-        return updateCount
-    }
-
-    /// Rekordbox's timestamp format, e.g. `2026-07-11 23:11:07.856 +00:00`.
-    private static let timestampFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(identifier: "UTC")
-        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS xxx"
-        return formatter
-    }()
-
-    /// Updates this in-memory snapshot after a successful `saveColor`, which returned `updateCount`.
-    public mutating func applyColor(_ color: TrackColor?, toTrackIDs ids: [Track.ID], updateCount: Int) {
-        self.updateCount = updateCount
-        for id in ids {
-            guard var track = tracksByID[id] else { continue }
-            track.color = color
-            tracks[track.libraryIndex] = track
-            tracksByID[id] = track
-        }
-        sortRanks[\Track.colorSortKey] = Self.ranks(tracks, \.colorSortKey, by: <)
     }
 
     /// Sorts `tracks` using the precomputed ranks. Ties keep their existing (e.g. playlist) order.
