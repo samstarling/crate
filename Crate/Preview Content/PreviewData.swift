@@ -100,21 +100,39 @@ extension Waveform {
     }
 }
 
+extension StagedChange {
+    static let previews: [StagedChange] = [
+        PendingChange.setColor(colorID: 8, trackIDs: [Track.previews[0].id]),
+        PendingChange.remove(trackIDs: [Track.previews[5].id], movingFilesToTrash: true),
+    ].map { StagedChange($0, summary: $0.summary(in: .preview)) }
+}
+
 extension JournalEntry {
     static let previews: [JournalEntry] = {
         let location = RekordboxLibrary.preview.location
-        var reverted = JournalEntry(summary: "Setting 2 tracks to Wonky", libraryLocation: location, changes: .none, date: .now.addingTimeInterval(-86_400))
+        var reverted = JournalEntry(summary: "Set 2 tracks to Melodic", libraryLocation: location, changes: .none, date: .now.addingTimeInterval(-86_400))
         reverted.revertedAt = .now.addingTimeInterval(-80_000)
         return [
             JournalEntry(
-                summary: "Removing \u{201C}Unmastered Demo\u{201D}", libraryLocation: location, changes: .none,
-                trashedFiles: [TrashedFile(original: URL(filePath: "/Music/Demo.mp3"), inTrash: URL(filePath: "/Users/me/.Trash/Demo.mp3"))],
+                summary: "3 changes",
+                items: ["Set \u{201C}Copper Sun\u{201D} to Moody", "Clear the colour of 2 tracks", "Remove \u{201C}Old Demo\u{201D} and move its file to the Trash"],
+                libraryLocation: location, changes: .none,
+                trashedFiles: [TrashedFile(original: URL(filePath: "/Music/Old Demo.mp3"), inTrash: URL(filePath: "/Users/me/.Trash/Old Demo.mp3"))],
                 date: .now.addingTimeInterval(-300)
             ),
-            JournalEntry(summary: "Clearing the colour of a track", libraryLocation: location, changes: .none, date: .now.addingTimeInterval(-3_600)),
             reverted,
         ]
     }()
+}
+
+extension Journal {
+    /// A journal in a temporary folder, so previews never read or write the real one.
+    static let preview = Journal(directory: FileManager.default.temporaryDirectory.appending(path: "CratePreview/Journal"))
+}
+
+extension PendingChangeStore {
+    /// Pending changes in a temporary folder, so previews never read or write the real ones.
+    static let preview = PendingChangeStore(directory: FileManager.default.temporaryDirectory.appending(path: "CratePreview/Pending"))
 }
 
 /// Supplies a sample library and a paused player: `#Preview(traits: .sampleData)`.
@@ -122,9 +140,11 @@ struct SampleData: PreviewModifier {
     static func makeSharedContext() async throws -> (LibraryModel, PlayerModel) {
         let track = Track.previews[0]
         let player = PlayerModel.preview(track, waveform: .preview(duration: track.duration, bpm: track.bpm), at: 74)
-        // A journal in a temporary folder, so previews never read or write the real one.
-        let journal = Journal(directory: FileManager.default.temporaryDirectory.appending(path: "CratePreviewJournal"))
-        return (LibraryModel(library: .preview, history: JournalEntry.previews, journal: journal), player)
+        let model = LibraryModel(
+            library: .preview, pendingChanges: StagedChange.previews, history: JournalEntry.previews,
+            journal: .preview, pendingStore: .preview
+        )
+        return (model, player)
     }
 
     func body(content: Content, context: (LibraryModel, PlayerModel)) -> some View {

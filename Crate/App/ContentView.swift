@@ -10,6 +10,7 @@ import SwiftUI
 
 enum SidebarItem: Hashable {
     case collection
+    case changes
     case playlist(String)
 }
 
@@ -23,7 +24,7 @@ struct ContentView: View {
         Group {
             if let library = model.library {
                 NavigationSplitView {
-                    SidebarView(library: library, selection: $selection)
+                    SidebarView(library: library, pendingChangeCount: model.pendingChanges.count, selection: $selection)
                 } detail: {
                     detail(for: library)
                 }
@@ -46,23 +47,13 @@ struct ContentView: View {
         .onChange(of: undoManager) { model.undoManager = undoManager }
         .frame(minWidth: 900, minHeight: 500)
         .alert(
-            "Couldn't open library",
-            isPresented: Binding(get: { model.errorMessage != nil }, set: { if !$0 { model.errorMessage = nil } })
-        ) {
+            model.alert?.title ?? "",
+            isPresented: Binding(get: { model.alert != nil }, set: { if !$0 { model.alert = nil } }),
+            presenting: model.alert
+        ) { _ in
             Button("OK") {}
-        } message: {
-            Text(model.errorMessage ?? "")
-        }
-        .alert(
-            "Your Library Has Changed",
-            isPresented: Binding(get: { model.conflictedEdit != nil }, set: { if !$0 { model.conflictedEdit = nil } }),
-            presenting: model.conflictedEdit
-        ) { edit in
-            Button("Reload and Apply") { Task { await model.reloadAndApply(edit) } }
-            Button("Reload Without Applying") { Task { await model.reload() } }
-            Button("Cancel", role: .cancel) {}
-        } message: { edit in
-            Text("\(edit.summary) wasn\u{2019}t saved, because your Rekordbox library has changed since Crate loaded it, probably in Rekordbox. Crate can reload the library and then apply your change.")
+        } message: { alert in
+            Text(alert.message)
         }
         .alert(
             "Couldn't play track",
@@ -99,6 +90,8 @@ struct ContentView: View {
                     ContentUnavailableView(playlist.name, systemImage: "folder", description: Text("Select a playlist."))
                 }
             }
+        case .changes:
+            ChangesView()
         case .collection, nil:
             TrackTable(title: "Collection", tracks: library.tracks, library: library)
                 .id("collection")

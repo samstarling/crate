@@ -3,8 +3,8 @@ import Foundation
 /// A snapshot of a Rekordbox 6/7 library, read from its `master.db`.
 public struct RekordboxLibrary: Sendable {
     public let location: URL
-    public private(set) var tracks: [Track]
-    public private(set) var tracksByID: [String: Track]
+    public internal(set) var tracks: [Track]
+    public internal(set) var tracksByID: [String: Track]
     public let playlists: [Playlist]
     /// The eight track colours, in Rekordbox's order.
     public let colors: [TrackColor]
@@ -16,7 +16,7 @@ public struct RekordboxLibrary: Sendable {
     /// For each sortable key path, every track's rank (indexed by `Track.libraryIndex`) in ascending
     /// order. Equal values share a rank. Computed once at load so sorting is just integer comparisons.
     /// (Key path literals capture nothing, so sharing them across threads is safe.)
-    nonisolated(unsafe) private(set) var sortRanks: [PartialKeyPath<Track>: [Int]]
+    nonisolated(unsafe) var sortRanks: [PartialKeyPath<Track>: [Int]]
 
     public init(
         location: URL,
@@ -84,7 +84,7 @@ public struct RekordboxLibrary: Sendable {
         )
     }
 
-    private static func ranks<Value>(
+    static func ranks<Value>(
         _ tracks: [Track], _ keyPath: KeyPath<Track, Value>, by areInIncreasingOrder: (Value, Value) -> Bool
     ) -> [Int] {
         let values = tracks.map { $0[keyPath: keyPath] }
@@ -272,18 +272,6 @@ public struct RekordboxLibrary: Sendable {
             guard seen.insert(id).inserted else { return nil }
             return tracksByID[id]
         }
-    }
-
-    /// Updates this in-memory snapshot after a successful `saveColor`, which returned `updateCount`.
-    public mutating func applyColor(_ color: TrackColor?, toTrackIDs ids: [Track.ID], updateCount: Int) {
-        self.updateCount = updateCount
-        for id in ids {
-            guard var track = tracksByID[id] else { continue }
-            track.color = color
-            tracks[track.libraryIndex] = track
-            tracksByID[id] = track
-        }
-        sortRanks[\Track.colorSortKey] = Self.ranks(tracks, \.colorSortKey, by: <)
     }
 
     /// Sorts `tracks` using the precomputed ranks. Ties keep their existing (e.g. playlist) order.

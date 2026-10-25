@@ -1,20 +1,34 @@
 import Foundation
 
 extension RekordboxLibrary {
-    // MARK: Colours
+    // MARK: Applying changes
 
-    /// Writes a new colour (or none) for the given tracks to `master.db` in `folder`.
+    /// Writes pending changes to `master.db` in `folder`, in order, in one transaction: either all
+    /// of them are saved or none are.
     /// - Returns: What changed, including the library's new update count.
     /// - Throws: `LibraryChanged` if the library's update count isn't `expectedUpdateCount`.
+    @discardableResult
+    public static func apply(_ changes: [PendingChange], in folder: URL, expectedUpdateCount: Int?) throws -> ChangeSet {
+        try edit(in: folder, expectedUpdateCount: expectedUpdateCount) { editor in
+            for change in changes {
+                switch change {
+                case .setColor(let colorID, let ids):
+                    for id in ids {
+                        try editor.update("djmdContent", set: "ColorID = ?", [.text(String(colorID ?? 0))], where: "ID = ?", [.text(id)])
+                    }
+                case .remove(let ids, _):
+                    try removeTracks(withIDs: ids, with: editor)
+                }
+            }
+        }
+    }
+
+    /// Writes a new colour (or none) for the given tracks to `master.db` in `folder`.
     @discardableResult
     public static func saveColor(
         _ color: TrackColor?, forTrackIDs ids: [Track.ID], in folder: URL, expectedUpdateCount: Int?
     ) throws -> ChangeSet {
-        try edit(in: folder, expectedUpdateCount: expectedUpdateCount) { editor in
-            for id in ids {
-                try editor.update("djmdContent", set: "ColorID = ?", [.text(String(color?.id ?? 0))], where: "ID = ?", [.text(id)])
-            }
-        }
+        try apply([.setColor(colorID: color?.id, trackIDs: ids)], in: folder, expectedUpdateCount: expectedUpdateCount)
     }
 
     // MARK: Removing tracks
@@ -54,48 +68,48 @@ extension RekordboxLibrary {
     /// This mirrors what Rekordbox does: rows are deleted rather than marked deleted, and later
     /// tracks in each numbered list are renumbered. Artists, albums and genres that only the removed
     /// tracks used are deleted too. The audio files and Rekordbox's analysis files are left on disk.
-    /// - Returns: What changed, including the library's new update count.
-    /// - Throws: `LibraryChanged` if the library's update count isn't `expectedUpdateCount`.
     @discardableResult
     public static func removeTracks(withIDs ids: [Track.ID], in folder: URL, expectedUpdateCount: Int?) throws -> ChangeSet {
-        try edit(in: folder, expectedUpdateCount: expectedUpdateCount) { editor in
-            var artists = Set<String>(), albums = Set<String>(), genres = Set<String>()
-            for id in ids {
-                try editor.query(
-                    "SELECT \(trackArtistColumns.joined(separator: ", ")), AlbumID, GenreID FROM djmdContent WHERE ID = ?", [.text(id)]
-                ) { row in
-                    for column in trackArtistColumns.indices {
-                        if let artist = row.string(Int32(column)), !artist.isEmpty { artists.insert(artist) }
-                    }
-                    if let album = row.string(Int32(trackArtistColumns.count)), !album.isEmpty { albums.insert(album) }
-                    if let genre = row.string(Int32(trackArtistColumns.count + 1)), !genre.isEmpty { genres.insert(genre) }
-                }
+        try apply([.remove(trackIDs: ids, movingFilesToTrash: false)], in: folder, expectedUpdateCount: expectedUpdateCount)
+    }
 
-                for (table, list) in orderedTrackTables {
-                    // Some lists (My Tags, for one) aren't numbered: TrackNo is NULL, so there's no gap to close.
-                    var positions: [(list: String, trackNo: Int)] = []
-                    try editor.query(
-                        "SELECT \(list ?? "''"), TrackNo FROM \(table) WHERE ContentID = ? AND TrackNo IS NOT NULL", [.text(id)]
-                    ) { row in
-                        positions.append((row.string(0) ?? "", row.int(1)))
-                    }
-                    try editor.delete(from: table, where: "ContentID = ?", [.text(id)])
-
-                    // Close gaps from the end, so a track listed twice in one list renumbers correctly.
-                    for position in positions.sorted(by: { $0.trackNo > $1.trackNo }) {
-                        let sameList = list.map { "\($0) = ? AND " } ?? ""
-                        let listValue: [SQLiteDatabase.Value] = list == nil ? [] : [.text(position.list)]
-                        try editor.update(table, set: "TrackNo = TrackNo - 1", where: "\(sameList)TrackNo > ?", listValue + [.int(position.trackNo)])
-                        editor.noteRenumbered(ChangeSet.ListReference(table: table, column: list, value: list == nil ? nil : position.list))
-                    }
+    private static func removeTracks(withIDs ids: [Track.ID], with editor: Editor) throws {
+        var artists = Set<String>(), albums = Set<String>(), genres = Set<String>()
+        for id in ids {
+            try editor.query(
+                "SELECT \(trackArtistColumns.joined(separator: ", ")), AlbumID, GenreID FROM djmdContent WHERE ID = ?", [.text(id)]
+            ) { row in
+                for column in trackArtistColumns.indices {
+                    if let artist = row.string(Int32(column)), !artist.isEmpty { artists.insert(artist) }
                 }
-                for (table, column) in trackDetailTables {
-                    try editor.delete(from: table, where: "\(column) = ?", [.text(id)])
-                }
-                try editor.delete(from: "djmdContent", where: "ID = ?", [.text(id)])
+                if let album = row.string(Int32(trackArtistColumns.count)), !album.isEmpty { albums.insert(album) }
+                if let genre = row.string(Int32(trackArtistColumns.count + 1)), !genre.isEmpty { genres.insert(genre) }
             }
-            try deleteUnused(albums: albums, artists: artists, genres: genres, with: editor)
+
+            for (table, list) in orderedTrackTables {
+                // Some lists (My Tags, for one) aren't numbered: TrackNo is NULL, so there's no gap to close.
+                var positions: [(list: String, trackNo: Int)] = []
+                try editor.query(
+                    "SELECT \(list ?? "''"), TrackNo FROM \(table) WHERE ContentID = ? AND TrackNo IS NOT NULL", [.text(id)]
+                ) { row in
+                    positions.append((row.string(0) ?? "", row.int(1)))
+                }
+                try editor.delete(from: table, where: "ContentID = ?", [.text(id)])
+
+                // Close gaps from the end, so a track listed twice in one list renumbers correctly.
+                for position in positions.sorted(by: { $0.trackNo > $1.trackNo }) {
+                    let sameList = list.map { "\($0) = ? AND " } ?? ""
+                    let listValue: [SQLiteDatabase.Value] = list == nil ? [] : [.text(position.list)]
+                    try editor.update(table, set: "TrackNo = TrackNo - 1", where: "\(sameList)TrackNo > ?", listValue + [.int(position.trackNo)])
+                    editor.noteRenumbered(ChangeSet.ListReference(table: table, column: list, value: list == nil ? nil : position.list))
+                }
+            }
+            for (table, column) in trackDetailTables {
+                try editor.delete(from: table, where: "\(column) = ?", [.text(id)])
+            }
+            try editor.delete(from: "djmdContent", where: "ID = ?", [.text(id)])
         }
+        try deleteUnused(albums: albums, artists: artists, genres: genres, with: editor)
     }
 
     /// Deletes those of the given albums, artists and genres that no track refers to any more, the

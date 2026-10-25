@@ -4,8 +4,10 @@ import Foundation
 public struct JournalEntry: Codable, Identifiable, Hashable, Sendable {
     public let id: UUID
     public let date: Date
-    /// What the edit did, for example "Removing “Night Drive”".
+    /// What the edit did, for example "Remove “Night Drive”" or "3 changes".
     public let summary: String
+    /// For an edit made of several changes, a description of each.
+    public let items: [String]
     /// The library folder the edit was made to.
     public let libraryLocation: URL
     public let changes: ChangeSet
@@ -16,8 +18,26 @@ public struct JournalEntry: Codable, Identifiable, Hashable, Sendable {
 
     public var isReverted: Bool { revertedAt != nil }
 
+    private enum CodingKeys: String, CodingKey {
+        case id, date, summary, items, libraryLocation, changes, trashedFiles, revertedAt
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        date = try container.decode(Date.self, forKey: .date)
+        summary = try container.decode(String.self, forKey: .summary)
+        // Entries saved before edits could be batched have no items.
+        items = try container.decodeIfPresent([String].self, forKey: .items) ?? []
+        libraryLocation = try container.decode(URL.self, forKey: .libraryLocation)
+        changes = try container.decode(ChangeSet.self, forKey: .changes)
+        trashedFiles = try container.decode([TrashedFile].self, forKey: .trashedFiles)
+        revertedAt = try container.decodeIfPresent(Date.self, forKey: .revertedAt)
+    }
+
     public init(
         summary: String,
+        items: [String] = [],
         libraryLocation: URL,
         changes: ChangeSet,
         trashedFiles: [TrashedFile] = [],
@@ -27,6 +47,7 @@ public struct JournalEntry: Codable, Identifiable, Hashable, Sendable {
         self.id = id
         self.date = date
         self.summary = summary
+        self.items = items
         self.libraryLocation = libraryLocation
         self.changes = changes
         self.trashedFiles = trashedFiles

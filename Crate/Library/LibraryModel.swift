@@ -2,33 +2,52 @@ import AppKit
 import Observation
 import RekordboxKit
 
+/// An error or notice to show the user.
+struct AppAlert: Identifiable {
+    let id = UUID()
+    let title: String
+    let message: String
+}
+
 @Observable
 final class LibraryModel {
+    /// The library as it's saved in `master.db`.
+    private(set) var savedLibrary: RekordboxLibrary?
+    /// The library with pending changes made, which is what Crate shows.
     private(set) var library: RekordboxLibrary?
-    private(set) var isLoading = false
-    var errorMessage: String?
-    /// Edits made to the open library, newest first.
+    /// Changes made in Crate but not yet applied to the library, oldest first.
+    private(set) var pendingChanges: [StagedChange]
+    /// Changes applied to the open library, newest first.
     private(set) var history: [JournalEntry]
-    /// An edit that wasn't saved because the library changed since Crate loaded it, waiting for the
-    /// user to decide whether to reload and apply it again.
-    var conflictedEdit: LibraryEdit?
-    /// The main window's undo manager, so edits can be undone with ⌘Z.
+    private(set) var isLoading = false
+    private(set) var isApplying = false
+    var alert: AppAlert?
+    /// The main window's undo manager, so changes can be undone with ⌘Z.
     @ObservationIgnored var undoManager: UndoManager?
 
     @ObservationIgnored private let journal: Journal
-    /// Libraries already backed up this session, so we only back up before the first edit.
+    @ObservationIgnored private let pendingStore: PendingChangeStore
+    /// Libraries already backed up this session, so we only back up before the first write.
     @ObservationIgnored private var backedUpLibraries = Set<URL>()
-    /// The most recent edit or revert, so the next one can wait for it.
-    @ObservationIgnored private var latestChange: Task<Void, Never>?
+    /// The most recent write, so the next one can wait for it.
+    @ObservationIgnored private var latestWrite: Task<Void, Never>?
 
     private static let locationDefaultsKey = "LibraryLocation"
-    private static let rekordboxBundleIdentifier = "com.pioneerdj.rekordboxdj"
     nonisolated private static let backupsToKeep = 10
 
-    init(library: RekordboxLibrary? = nil, history: [JournalEntry] = [], journal: Journal = Journal()) {
-        self.library = library
+    init(
+        library: RekordboxLibrary? = nil,
+        pendingChanges: [StagedChange] = [],
+        history: [JournalEntry] = [],
+        journal: Journal = Journal(),
+        pendingStore: PendingChangeStore = PendingChangeStore()
+    ) {
+        self.savedLibrary = library
+        self.library = library?.applying(pendingChanges.map(\.change))
+        self.pendingChanges = pendingChanges
         self.history = history
         self.journal = journal
+        self.pendingStore = pendingStore
     }
 
     // MARK: Opening
@@ -41,22 +60,32 @@ final class LibraryModel {
         await open(folder)
     }
 
+    /// Opens (or reloads) a library, along with any changes still pending for it. Pending changes
+    /// are checked against the library as loaded, dropping any tracks that are no longer in it.
     func open(_ folder: URL) async {
         isLoading = true
         defer { isLoading = false }
         do {
-            library = try await Task.detached(priority: .userInitiated) {
+            let saved = try await Task.detached(priority: .userInitiated) {
                 try RekordboxLibrary.load(from: folder)
             }.value
+            let stored = pendingStore.load(forLibraryAt: folder)
+            let pending = stored.compactMap { $0.revalidated(against: saved) }
+            savedLibrary = saved
+            pendingChanges = pending
+            library = saved.applying(pending.map(\.change))
             history = journal.entries(forLibraryAt: folder)
+            if pending != stored {
+                savePendingChanges()
+            }
             UserDefaults.standard.set(folder.path, forKey: Self.locationDefaultsKey)
         } catch {
-            errorMessage = error.localizedDescription
+            alert = AppAlert(title: "Couldn\u{2019}t Open Library", message: error.localizedDescription)
         }
     }
 
     func reload() async {
-        guard let location = library?.location else { return }
+        guard let location = savedLibrary?.location else { return }
         await open(location)
     }
 
@@ -68,133 +97,144 @@ final class LibraryModel {
         panel.canChooseFiles = true
         panel.allowsMultipleSelection = false
         panel.showsHiddenFiles = true
-        panel.directoryURL = library?.location ?? RekordboxLibrary.defaultLocation
+        panel.directoryURL = savedLibrary?.location ?? RekordboxLibrary.defaultLocation
 
         guard panel.runModal() == .OK, let url = panel.url else { return }
         let folder = url.hasDirectoryPath ? url : url.deletingLastPathComponent()
         await open(folder)
     }
 
-    // MARK: Editing
+    // MARK: Pending changes
 
-    /// Saves a colour for the given tracks to `master.db`, then updates the in-memory library.
-    func setColor(_ color: TrackColor?, forTrackIDs ids: [Track.ID]) async {
-        guard !ids.isEmpty else { return }
-        await apply(.setColor(color, trackIDs: ids))
+    /// Sets the colour of tracks, as a pending change.
+    func setColor(_ color: TrackColor?, forTrackIDs ids: [Track.ID]) {
+        stage(.setColor(colorID: color?.id, trackIDs: ids), actionName: "Set Colour")
     }
 
-    /// Removes tracks from the collection (and every playlist), optionally moving their audio files
-    /// to the Trash, then reloads the library.
-    func removeTracks(_ tracks: [Track], movingFilesToTrash: Bool) async {
-        guard !tracks.isEmpty else { return }
-        await apply(.remove(tracks, movingFilesToTrash: movingFilesToTrash))
+    /// Removes tracks from the collection (and every playlist), as a pending change. Their audio files
+    /// are moved to the Trash when the change is applied, if asked.
+    func removeTracks(_ tracks: [Track], movingFilesToTrash: Bool) {
+        stage(.remove(trackIDs: tracks.map(\.id), movingFilesToTrash: movingFilesToTrash), actionName: "Remove from Collection")
     }
 
-    /// Reloads the library after a conflict, then applies the edit again if its tracks are still there.
-    func reloadAndApply(_ edit: LibraryEdit) async {
-        conflictedEdit = nil
-        await reload()
-        guard let library else { return }
-        guard let edit = edit.revalidated(against: library) else {
-            errorMessage = "Your library was reloaded, but the tracks you were changing are no longer in it."
-            return
-        }
-        await apply(edit)
+    private func stage(_ change: PendingChange, actionName: String) {
+        guard let library, !change.trackIDs.isEmpty else { return }
+        let staged = StagedChange(change, summary: change.summary(in: library))
+        pendingChanges.append(staged)
+        self.library = library.applying([change])
+        savePendingChanges()
+        undoManager?.registerUndo(withTarget: self) { model in model.discard(staged) }
+        undoManager?.setActionName(actionName)
     }
 
-    private func apply(_ edit: LibraryEdit) async {
-        await enqueue { await self.perform(edit) }
+    /// Discards a pending change, so it won't be applied.
+    func discard(_ change: StagedChange) {
+        pendingChanges.removeAll { $0.id == change.id }
+        library = savedLibrary?.applying(pendingChanges.map(\.change))
+        savePendingChanges()
     }
 
-    private func perform(_ edit: LibraryEdit) async {
-        guard let location = library?.location else { return }
-        switch edit {
-        case .setColor(let color, let ids):
-            guard let changes = await save(edit, { location, expected in
-                try RekordboxLibrary.saveColor(color, forTrackIDs: ids, in: location, expectedUpdateCount: expected)
-            }) else { return }
-            library?.applyColor(color, toTrackIDs: ids, updateCount: changes.updateCount)
-            record(JournalEntry(summary: edit.summary, libraryLocation: location, changes: changes))
-
-        case .remove(let tracks, let movingFilesToTrash):
-            let ids = tracks.map(\.id)
-            guard let changes = await save(edit, { location, expected in
-                try RekordboxLibrary.removeTracks(withIDs: ids, in: location, expectedUpdateCount: expected)
-            }) else { return }
-
-            let files = movingFilesToTrash ? tracks.map(\.fileURL) : []
-            let (trashed, failures) = await Task.detached(priority: .userInitiated) { Self.moveToTrash(files) }.value
-            record(JournalEntry(summary: edit.summary, libraryLocation: location, changes: changes, trashedFiles: trashed))
-            await reload()
-            if !failures.isEmpty {
-                errorMessage = "Removed from your collection, but couldn\u{2019}t move \(failures.formatted()) to the Trash."
-            }
-        }
+    func discardAllPendingChanges() {
+        pendingChanges = []
+        library = savedLibrary
+        savePendingChanges()
+        undoManager?.removeAllActions(withTarget: self)
     }
 
-    /// Writes an edit to the library's `master.db`, after checking Rekordbox isn't running and backing
-    /// up the library before the first change this session. `change` is given the library's location
-    /// and the update count Crate loaded.
-    ///
-    /// Returns what changed, or `nil` if the edit wasn't saved: then either `errorMessage` says why,
-    /// or `conflictedEdit` is set because the library changed since Crate loaded it.
-    private func save(_ edit: LibraryEdit, _ change: @escaping @Sendable (URL, Int?) throws -> ChangeSet) async -> ChangeSet? {
-        guard let location = library?.location else { return nil }
-        let expectedUpdateCount = library?.updateCount
+    private func savePendingChanges() {
+        guard let location = savedLibrary?.location else { return }
         do {
-            return try await write(to: location) { try change(location, expectedUpdateCount) }
-        } catch is RekordboxLibrary.LibraryChanged {
-            conflictedEdit = edit
-            return nil
+            try pendingStore.save(pendingChanges, forLibraryAt: location)
         } catch {
-            errorMessage = "Couldn\u{2019}t save: \(error.localizedDescription)"
-            return nil
+            alert = AppAlert(
+                title: "Couldn\u{2019}t Save Pending Changes",
+                message: "Your changes are still pending, but would be lost if Crate quit. \(error.localizedDescription)"
+            )
         }
     }
 
-    /// Saves a journal entry for an edit, and makes it undoable.
+    // MARK: Applying
+
+    /// Writes every pending change to the library's `master.db`, in one transaction, then reloads.
+    ///
+    /// If the library has changed since Crate loaded it (in Rekordbox, say), nothing is written:
+    /// Crate reloads it and keeps the pending changes, so the user can review and apply them again.
+    func applyPendingChanges() async {
+        guard let saved = savedLibrary, !pendingChanges.isEmpty, !isApplying else { return }
+        isApplying = true
+        defer { isApplying = false }
+
+        let staged = pendingChanges
+        let changes = staged.map(\.change)
+        let location = saved.location
+        let expectedUpdateCount = saved.updateCount
+        do {
+            let changeSet = try await write(to: location) {
+                try RekordboxLibrary.apply(changes, in: location, expectedUpdateCount: expectedUpdateCount)
+            }
+
+            let files = changes.flatMap { change -> [URL] in
+                guard case .remove(let ids, true) = change else { return [] }
+                return ids.compactMap { saved.tracksByID[$0]?.fileURL }
+            }
+            let (trashed, failures) = await Task.detached(priority: .userInitiated) { Self.moveToTrash(files) }.value
+
+            let entry = JournalEntry(
+                summary: staged.count == 1 ? staged[0].summary : "\(staged.count) changes",
+                items: staged.count == 1 ? [] : staged.map(\.summary),
+                libraryLocation: location,
+                changes: changeSet,
+                trashedFiles: trashed
+            )
+            record(entry)
+            pendingChanges = []
+            savePendingChanges()
+            await reload()
+
+            // Undoing now means reverting what was applied, not discarding pending changes.
+            undoManager?.removeAllActions(withTarget: self)
+            undoManager?.registerUndo(withTarget: self) { model in
+                Task { await model.undo(entry) }
+            }
+            undoManager?.setActionName("Apply Changes")
+
+            if !failures.isEmpty {
+                alert = AppAlert(
+                    title: "Couldn\u{2019}t Move Files to the Trash",
+                    message: "Your changes were applied, but \(failures.formatted()) couldn\u{2019}t be moved to the Trash."
+                )
+            }
+        } catch is RekordboxLibrary.LibraryChanged {
+            await reload()
+            alert = AppAlert(
+                title: "Your Library Has Changed",
+                message: "Your Rekordbox library has changed since Crate loaded it, probably in Rekordbox, so nothing was applied. Crate has reloaded it, and your changes are still pending: review them in Changes, then apply them again."
+            )
+        } catch {
+            alert = AppAlert(title: "Couldn\u{2019}t Apply Changes", message: error.localizedDescription)
+        }
+    }
+
+    /// Saves a journal entry for applied changes.
     private func record(_ entry: JournalEntry) {
         do {
             try journal.save(entry)
         } catch {
-            errorMessage = "Saved, but couldn\u{2019}t record the change, so it can\u{2019}t be undone: \(error.localizedDescription)"
+            alert = AppAlert(
+                title: "Couldn\u{2019}t Record Changes",
+                message: "Your changes were applied, but couldn\u{2019}t be recorded, so they can\u{2019}t be reverted. \(error.localizedDescription)"
+            )
         }
         history.insert(entry, at: 0)
-        undoManager?.registerUndo(withTarget: self) { model in
-            Task { await model.undo(entry) }
-        }
-        undoManager?.setActionName(entry.summary)
     }
 
     // MARK: Reverting
 
-    /// Reverts an edit, putting back everything it changed in the library and any files it moved to
-    /// the Trash. Throws if Rekordbox is running, or if something the edit changed has been changed
-    /// again since (`RekordboxLibrary.CannotRevert`).
+    /// Reverts applied changes, putting back everything they changed in the library and any files
+    /// moved to the Trash. Throws `RekordboxLibrary.CannotRevert` if something they changed has
+    /// been changed again since.
     func revert(_ entry: JournalEntry) async throws {
-        var result: Result<Void, any Error> = .success(())
-        await enqueue {
-            do {
-                try await self.performRevert(entry)
-            } catch {
-                result = .failure(error)
-            }
-        }
-        try result.get()
-    }
-
-    /// Reverts an edit from Edit ▸ Undo, reporting any problem in the main window.
-    private func undo(_ entry: JournalEntry) async {
-        do {
-            try await revert(entry)
-        } catch {
-            errorMessage = "Couldn\u{2019}t undo \(entry.summary.lowercasedFirst): \(error.localizedDescription)"
-        }
-    }
-
-    private func performRevert(_ entry: JournalEntry) async throws {
-        // Use the latest version of the entry: it may have been reverted from the history window
-        // since this undo was registered.
+        // Use the latest version of the entry: it may have been reverted since this was asked for.
         let entry = history.first { $0.id == entry.id } ?? entry
         guard !entry.isReverted else { return }
         _ = try await write(to: entry.libraryLocation) { try RekordboxLibrary.revert(entry.changes, in: entry.libraryLocation) }
@@ -206,6 +246,15 @@ final class LibraryModel {
         await reload()
         if !failures.isEmpty {
             throw RevertError.filesNotRestored(failures)
+        }
+    }
+
+    /// Reverts applied changes from Edit ▸ Undo, reporting any problem.
+    private func undo(_ entry: JournalEntry) async {
+        do {
+            try await revert(entry)
+        } catch {
+            alert = AppAlert(title: "Couldn\u{2019}t Undo", message: error.localizedDescription)
         }
     }
 
@@ -222,39 +271,22 @@ final class LibraryModel {
 
     // MARK: Writing safely
 
-    /// Runs changes one at a time. Each edit expects the update count the previous one left behind,
-    /// so overlapping edits would otherwise look like someone else changed the library.
-    private func enqueue(_ change: @escaping @MainActor () async -> Void) async {
-        let previous = latestChange
-        let task = Task {
-            await previous?.value
-            await change()
-        }
-        latestChange = task
-        await task.value
-    }
-
-    /// Runs `write` against `master.db` in `location`, once Rekordbox is confirmed closed and the
-    /// library has been backed up this session.
+    /// Runs `write` against `master.db` in `location`, after backing up the library the first time
+    /// this session. Writes run one at a time.
     private func write<T: Sendable>(to location: URL, _ write: @escaping @Sendable () throws -> T) async throws -> T {
-        if !NSRunningApplication.runningApplications(withBundleIdentifier: Self.rekordboxBundleIdentifier).isEmpty {
-            throw RekordboxRunning()
-        }
+        let previous = latestWrite
         let needsBackup = !backedUpLibraries.contains(location)
-        let result = try await Task.detached(priority: .userInitiated) {
+        let task = Task.detached(priority: .userInitiated) {
+            await previous?.value
             if needsBackup {
                 try Self.backUp(location)
             }
             return try write()
-        }.value
+        }
+        latestWrite = Task { _ = await task.result }
+        let result = try await task.value
         backedUpLibraries.insert(location)
         return result
-    }
-
-    struct RekordboxRunning: LocalizedError {
-        var errorDescription: String? {
-            "Quit Rekordbox before changing your library in Crate, so neither app overwrites the other\u{2019}s changes."
-        }
     }
 
     // MARK: Files
@@ -312,11 +344,5 @@ final class LibraryModel {
                 return file.original.lastPathComponent
             }
         }
-    }
-}
-
-private extension String {
-    var lowercasedFirst: String {
-        prefix(1).lowercased() + dropFirst()
     }
 }

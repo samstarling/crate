@@ -3,6 +3,7 @@ import SwiftUI
 
 struct SidebarView: View {
     let library: RekordboxLibrary
+    let pendingChangeCount: Int
     @Binding var selection: SidebarItem?
 
     var body: some View {
@@ -11,6 +12,9 @@ struct SidebarView: View {
                 Label("Collection", systemImage: "music.note.house")
                     .badge(library.tracks.count)
                     .tag(SidebarItem.collection)
+                Label("Changes", systemImage: "clock.arrow.circlepath")
+                    .badge(pendingChangeCount)
+                    .tag(SidebarItem.changes)
             }
 
             Section("Playlists") {
@@ -28,7 +32,7 @@ struct SidebarView: View {
 #Preview {
     @Previewable @State var selection: SidebarItem? = .collection
     NavigationSplitView {
-        SidebarView(library: .preview, selection: $selection)
+        SidebarView(library: .preview, pendingChangeCount: 2, selection: $selection)
     } detail: {
         Text(String(describing: selection))
     }
