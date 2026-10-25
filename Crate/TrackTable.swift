@@ -3,13 +3,16 @@ import SwiftUI
 struct TrackTable: View {
     let title: String
     let tracks: [Track]
+    let library: RekordboxLibrary
 
+    /// Filtered and sorted rows, cached so redraws (e.g. selection changes) don't redo the work.
+    @State private var visibleTracks: [Track] = []
     @State private var selection = Set<Track.ID>()
     /// Empty means "playlist order".
     @State private var sortOrder: [KeyPathComparator<Track>] = []
     @State private var searchText = ""
 
-    private var visibleTracks: [Track] {
+    private func refreshVisibleTracks() {
         var result = tracks
         let query = searchText.trimmingCharacters(in: .whitespaces)
         if !query.isEmpty {
@@ -18,15 +21,13 @@ struct TrackTable: View {
                     .contains { $0.localizedStandardContains(query) }
             }
         }
-        if !sortOrder.isEmpty {
-            result.sort(using: sortOrder)
+        if let comparator = sortOrder.first {
+            result = library.sorted(result, by: comparator)
         }
-        return result
+        visibleTracks = result
     }
 
     var body: some View {
-        let visibleTracks = visibleTracks
-
         Table(visibleTracks, selection: $selection, sortOrder: $sortOrder) {
             descriptionColumns
             analysisColumns
@@ -41,6 +42,10 @@ struct TrackTable: View {
         .searchable(text: $searchText, placement: .toolbar, prompt: "Title, artist, album…")
         .navigationTitle(title)
         .navigationSubtitle(summary(of: visibleTracks))
+        .onAppear(perform: refreshVisibleTracks)
+        .onChange(of: tracks) { refreshVisibleTracks() }
+        .onChange(of: searchText) { refreshVisibleTracks() }
+        .onChange(of: sortOrder) { refreshVisibleTracks() }
     }
 
     @TableColumnBuilder<Track, KeyPathComparator<Track>>

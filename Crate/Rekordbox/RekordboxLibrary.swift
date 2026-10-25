@@ -6,6 +6,10 @@ nonisolated struct RekordboxLibrary: Sendable {
     let tracks: [Track]
     let tracksByID: [String: Track]
     let playlists: [Playlist]
+    /// For each sortable key path, every track's rank (indexed by `Track.libraryIndex`) in ascending
+    /// order. Equal values share a rank. Computed once at load so sorting is just integer comparisons.
+    /// (Key path literals capture nothing, so sharing them across threads is safe.)
+    nonisolated(unsafe) let sortRanks: [PartialKeyPath<Track>: [Int]]
 
     static let defaultLocation = FileManager.default.homeDirectoryForCurrentUser
         .appending(path: "Library/Pioneer/rekordbox", directoryHint: .isDirectory)
@@ -44,8 +48,39 @@ nonisolated struct RekordboxLibrary: Sendable {
             location: folder,
             tracks: tracks,
             tracksByID: Dictionary(tracks.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }),
-            playlists: playlists
+            playlists: playlists,
+            sortRanks: sortRanks(for: tracks)
         )
+    }
+
+    private static func sortRanks(for tracks: [Track]) -> [PartialKeyPath<Track>: [Int]] {
+        func ranks<Value>(_ keyPath: KeyPath<Track, Value>, by areInIncreasingOrder: (Value, Value) -> Bool) -> [Int] {
+            let values = tracks.map { $0[keyPath: keyPath] }
+            let order = values.indices.sorted { areInIncreasingOrder(values[$0], values[$1]) }
+            var ranks = [Int](repeating: 0, count: values.count)
+            var rank = 0
+            for (position, index) in order.enumerated() {
+                if position > 0, areInIncreasingOrder(values[order[position - 1]], values[index]) {
+                    rank = position
+                }
+                ranks[index] = rank
+            }
+            return ranks
+        }
+
+        func text(_ keyPath: KeyPath<Track, String>) -> (PartialKeyPath<Track>, [Int]) {
+            (keyPath, ranks(keyPath) { $0.localizedStandardCompare($1) == .orderedAscending })
+        }
+
+        func number<Value: Comparable>(_ keyPath: KeyPath<Track, Value>) -> (PartialKeyPath<Track>, [Int]) {
+            (keyPath, ranks(keyPath, by: <))
+        }
+
+        return Dictionary(uniqueKeysWithValues: [
+            text(\.title), text(\.artist), text(\.album), text(\.genre), text(\.label), text(\.key),
+            number(\.dateAdded), number(\.bpm), number(\.duration), number(\.rating), number(\.year),
+            number(\.playCount),
+        ])
     }
 
     private static func loadTracks(from database: SQLiteDatabase, artworkRoot: URL) throws -> [Track] {
@@ -71,6 +106,7 @@ nonisolated struct RekordboxLibrary: Sendable {
             let imagePath = row.string(16) ?? ""
             tracks.append(Track(
                 id: row.string(0) ?? "",
+                libraryIndex: tracks.count,
                 title: row.string(1) ?? "",
                 artist: row.string(2) ?? "",
                 album: row.string(3) ?? "",
@@ -139,6 +175,20 @@ nonisolated struct RekordboxLibrary: Sendable {
             guard seen.insert(id).inserted else { return nil }
             return tracksByID[id]
         }
+    }
+
+    /// Sorts `tracks` using the precomputed ranks. Ties keep their existing (e.g. playlist) order.
+    func sorted(_ tracks: [Track], by comparator: KeyPathComparator<Track>) -> [Track] {
+        guard let ranks = sortRanks[comparator.keyPath] else {
+            return tracks.sorted(using: comparator)
+        }
+        let keys = tracks.map { ranks[$0.libraryIndex] }
+        let ascending = comparator.order == .forward
+        let order = keys.indices.sorted { a, b in
+            if keys[a] != keys[b] { return ascending ? keys[a] < keys[b] : keys[a] > keys[b] }
+            return a < b
+        }
+        return order.map { tracks[$0] }
     }
 
     func playlist(withID id: String) -> Playlist? {

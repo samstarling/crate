@@ -59,7 +59,7 @@ struct ContentView: View {
             if let playlist = library.playlist(withID: id) {
                 switch playlist.kind {
                 case .playlist:
-                    TrackTable(title: playlist.name, tracks: library.tracks(in: playlist))
+                    TrackTable(title: playlist.name, tracks: library.tracks(in: playlist), library: library)
                         .id(playlist.id)
                 case .smart:
                     ContentUnavailableView(
@@ -72,7 +72,7 @@ struct ContentView: View {
                 }
             }
         case .collection, nil:
-            TrackTable(title: "Collection", tracks: library.tracks)
+            TrackTable(title: "Collection", tracks: library.tracks, library: library)
                 .id("collection")
         }
     }

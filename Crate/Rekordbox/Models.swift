@@ -2,6 +2,8 @@ import SwiftUI
 
 nonisolated struct Track: Identifiable, Hashable, Sendable {
     let id: String
+    /// Position in `RekordboxLibrary.tracks`, used to look up precomputed sort ranks.
+    let libraryIndex: Int
     let title: String
     let artist: String
     let album: String
