@@ -265,11 +265,85 @@ nonisolated struct RekordboxLibrary: Sendable {
     // MARK: Editing
 
     /// Writes a new colour (or none) for the given tracks to `master.db` in `folder`.
-    ///
-    /// Each edited row gets a fresh `rb_local_usn` from Rekordbox's `localUpdateCount` counter and a
-    /// new `updated_at`, matching what Rekordbox itself does, so it sees the change as a local edit.
-    /// Rekordbox must not be running, or it may overwrite the change.
     static func saveColor(_ color: TrackColor?, forTrackIDs ids: [Track.ID], in folder: URL) throws {
+        try edit(in: folder) { database, nextUpdateCount, now in
+            for id in ids {
+                try database.execute(
+                    "UPDATE djmdContent SET ColorID = ?, rb_local_usn = ?, updated_at = ? WHERE ID = ?",
+                    [.text(String(color?.id ?? 0)), .int(nextUpdateCount()), .text(now), .text(id)]
+                )
+            }
+        }
+    }
+
+    /// Tables holding ordered lists of tracks, and the column naming which list (`nil` for a single
+    /// list). When a track is removed, later tracks in the same list move up to close the gap.
+    private static let orderedTrackTables: [(table: String, list: String?)] = [
+        ("djmdSongPlaylist", "PlaylistID"),
+        ("djmdSongHistory", "HistoryID"),
+        ("djmdSongMyTag", "MyTagID"),
+        ("djmdSongRelatedTracks", "RelatedTracksID"),
+        ("djmdSongSampler", "SamplerID"),
+        ("djmdSongHotCueBanklist", "HotCueBanklistID"),
+        ("djmdCloudExportSongPlaylist", "CloudExportPlaylistID"),
+        ("djmdSongTagList", nil),
+    ]
+
+    /// Other rows that belong to a track, by table and the column holding the track's ID.
+    private static let trackDetailTables: [(table: String, column: String)] = [
+        ("djmdCue", "ContentID"),
+        ("contentCue", "ContentID"),
+        ("contentFile", "ContentID"),
+        ("djmdMixerParam", "ContentID"),
+        ("djmdActiveCensor", "ContentID"),
+        ("contentActiveCensor", "ContentID"),
+        ("djmdRecommendLike", "ContentID1"),
+        ("djmdRecommendLike", "ContentID2"),
+    ]
+
+    /// Removes tracks from the collection in `master.db` in `folder`, along with every row that
+    /// refers to them: playlist and history entries, cues, My Tags and so on.
+    ///
+    /// This mirrors what Rekordbox does: rows are deleted rather than marked deleted, and later
+    /// tracks in each list are renumbered. The audio files and Rekordbox's analysis files are left
+    /// on disk.
+    static func removeTracks(withIDs ids: [Track.ID], in folder: URL) throws {
+        try edit(in: folder) { database, nextUpdateCount, now in
+            for id in ids {
+                for (table, list) in orderedTrackTables {
+                    var positions: [(list: String, trackNo: Int)] = []
+                    try database.query("SELECT \(list ?? "''"), TrackNo FROM \(table) WHERE ContentID = ?", [.text(id)]) { row in
+                        positions.append((row.string(0) ?? "", row.int(1)))
+                    }
+                    try database.execute("DELETE FROM \(table) WHERE ContentID = ?", [.text(id)])
+
+                    // Close gaps from the end, so a track listed twice in one list renumbers correctly.
+                    for position in positions.sorted(by: { $0.trackNo > $1.trackNo }) {
+                        let sameList = list.map { "\($0) = ? AND " } ?? ""
+                        let listValue: [SQLiteDatabase.Value] = list == nil ? [] : [.text(position.list)]
+                        try database.execute(
+                            "UPDATE \(table) SET TrackNo = TrackNo - 1, rb_local_usn = ?, updated_at = ? WHERE \(sameList)TrackNo > ?",
+                            [.int(nextUpdateCount()), .text(now)] + listValue + [.int(position.trackNo)]
+                        )
+                    }
+                }
+                for (table, column) in trackDetailTables {
+                    try database.execute("DELETE FROM \(table) WHERE \(column) = ?", [.text(id)])
+                }
+                try database.execute("DELETE FROM djmdContent WHERE ID = ?", [.text(id)])
+            }
+        }
+    }
+
+    /// Runs `body` in a transaction on `master.db`, tracking changes the way Rekordbox does.
+    ///
+    /// Each edited row should get a fresh `rb_local_usn` from `nextUpdateCount()`, which advances
+    /// Rekordbox's `localUpdateCount` counter, and `now` as its `updated_at`, so Rekordbox sees the
+    /// change as a local edit. Rekordbox must not be running, or it may overwrite the change.
+    private static func edit(
+        in folder: URL,
+        _ body: (SQLiteDatabase, _ nextUpdateCount: () -> Int, _ now: String) throws -> Void
+    ) throws {
         let database = try SQLiteDatabase(url: folder.appending(path: "master.db"), key: databaseKey, readOnly: false)
         let now = timestampFormatter.string(from: .now)
 
@@ -282,13 +356,11 @@ nonisolated struct RekordboxLibrary: Sendable {
                 throw SQLiteDatabase.Error(message: "This library has no update counter, so Crate can't safely edit it.")
             }
 
-            for id in ids {
+            try body(database, {
                 updateCount += 1
-                try database.execute(
-                    "UPDATE djmdContent SET ColorID = ?, rb_local_usn = ?, updated_at = ? WHERE ID = ?",
-                    [.text(String(color?.id ?? 0)), .int(updateCount), .text(now), .text(id)]
-                )
-            }
+                return updateCount
+            }, now)
+
             try database.execute(
                 "UPDATE agentRegistry SET int_1 = ?, updated_at = ? WHERE registry_id = 'localUpdateCount'",
                 [.int(updateCount), .text(now)]
@@ -328,6 +400,17 @@ nonisolated struct RekordboxLibrary: Sendable {
             return a < b
         }
         return order.map { tracks[$0] }
+    }
+
+    /// How many playlists (not counting smart playlists) contain any of these tracks.
+    func playlistCount(containing ids: Set<Track.ID>) -> Int {
+        func count(_ playlists: [Playlist]) -> Int {
+            playlists.reduce(0) { total, playlist in
+                let contains = playlist.kind == .playlist && playlist.trackIDs.contains(where: ids.contains)
+                return total + (contains ? 1 : 0) + count(playlist.children ?? [])
+            }
+        }
+        return count(playlists)
     }
 
     func playlist(withID id: String) -> Playlist? {

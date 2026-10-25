@@ -14,6 +14,7 @@ struct TrackTableView: NSViewRepresentable {
     let onPlay: (Track) -> Void
     let onTogglePlayback: () -> Void
     let onSetColor: ([Track.ID], TrackColor?) -> Void
+    let onRemove: ([Track]) -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -174,6 +175,13 @@ struct TrackTableView: NSViewRepresentable {
 
             menu.addItem(.separator())
             menu.addItem(item("Show in Finder", action: #selector(revealClickedTracks)))
+
+            menu.addItem(.separator())
+            menu.addItem(item("Remove from Collection\u{2026}", action: #selector(removeClickedTracks)))
+        }
+
+        @objc private func removeClickedTracks() {
+            parent.onRemove(clickedRows.map { tracks[$0] })
         }
 
         private func item(_ title: String, action: Selector) -> NSMenuItem {
@@ -243,7 +251,8 @@ private final class TrackNSTableView: NSTableView {
         selection: $selection,
         onPlay: { _ in },
         onTogglePlayback: {},
-        onSetColor: { _, _ in }
+        onSetColor: { _, _ in },
+        onRemove: { _ in }
     )
     .frame(width: 1100, height: 250)
 }

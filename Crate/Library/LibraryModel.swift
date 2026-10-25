@@ -39,10 +39,50 @@ final class LibraryModel {
 
     /// Saves a colour for the given tracks to `master.db`, then updates the in-memory library.
     func setColor(_ color: TrackColor?, forTrackIDs ids: [Track.ID]) async {
-        guard let location = library?.location, !ids.isEmpty else { return }
+        guard !ids.isEmpty else { return }
+        let saved = await editLibrary { location in
+            try RekordboxLibrary.saveColor(color, forTrackIDs: ids, in: location)
+        }
+        if saved {
+            library?.applyColor(color, toTrackIDs: ids)
+        }
+    }
+
+    /// Removes tracks from the collection (and every playlist), optionally moving their audio files
+    /// to the Trash, then reloads the library.
+    func removeTracks(_ tracks: [Track], movingFilesToTrash: Bool) async {
+        guard !tracks.isEmpty else { return }
+        let ids = tracks.map(\.id)
+        let files = movingFilesToTrash ? tracks.map(\.fileURL) : []
+        let removed = await editLibrary { location in
+            try RekordboxLibrary.removeTracks(withIDs: ids, in: location)
+        }
+        guard removed else { return }
+
+        let trashFailures = await Task.detached(priority: .userInitiated) {
+            files.compactMap { file -> String? in
+                guard FileManager.default.fileExists(atPath: file.path) else { return nil }
+                do {
+                    try FileManager.default.trashItem(at: file, resultingItemURL: nil)
+                    return nil
+                } catch {
+                    return file.lastPathComponent
+                }
+            }
+        }.value
+        await reload()
+        if !trashFailures.isEmpty {
+            errorMessage = "Removed from your collection, but couldn\u{2019}t move \(trashFailures.formatted()) to the Trash."
+        }
+    }
+
+    /// Runs a change to the library's `master.db`, after checking Rekordbox isn't running and backing
+    /// up the library before the first change this session. Returns whether the change was saved.
+    private func editLibrary(_ change: @escaping @Sendable (URL) throws -> Void) async -> Bool {
+        guard let location = library?.location else { return false }
         if NSRunningApplication.runningApplications(withBundleIdentifier: "com.pioneerdj.rekordboxdj").first != nil {
             errorMessage = "Quit Rekordbox before editing your library in Crate, so neither app overwrites the other's changes."
-            return
+            return false
         }
         let needsBackup = !backedUpLibraries.contains(location)
         do {
@@ -50,12 +90,13 @@ final class LibraryModel {
                 if needsBackup {
                     try Self.backUp(location)
                 }
-                try RekordboxLibrary.saveColor(color, forTrackIDs: ids, in: location)
+                try change(location)
             }.value
             backedUpLibraries.insert(location)
-            library?.applyColor(color, toTrackIDs: ids)
+            return true
         } catch {
             errorMessage = "Couldn't save: \(error.localizedDescription)"
+            return false
         }
     }
 
