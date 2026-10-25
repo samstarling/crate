@@ -1,0 +1,12 @@
+# macOS
+.DS_Store
+
+# Xcode per-user state (window layout, scheme ordering, breakpoints)
+xcuserdata/
+
+# Build output, if built outside the default DerivedData location
+build/
+DerivedData/
+
+# Claude Code per-user settings
+.claude/settings.local.json
