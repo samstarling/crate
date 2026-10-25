@@ -15,6 +15,9 @@ struct TrackTable: View {
     /// Empty means "playlist order".
     @State private var sortOrder: [KeyPathComparator<Track>] = []
     @State private var searchText = ""
+    @FocusState private var isSearchFocused: Bool
+    /// Identifies this table to the model while its search field is being edited.
+    @State private var id = UUID()
     /// Tracks waiting for the user to confirm removing them from the collection.
     @State private var tracksToRemove: [Track]?
 
@@ -41,10 +44,13 @@ struct TrackTable: View {
             selection: $selection,
             onPlay: { player.play($0) },
             onTogglePlayback: { player.togglePlayPause() },
-            onSetColor: { ids, color in Task { await model.setColor(color, forTrackIDs: ids) } },
+            onSetColor: { ids, color in model.setColor(color, forTrackIDs: ids) },
             onRemove: { tracksToRemove = $0 }
         )
             .searchable(text: $searchText, placement: .toolbar, prompt: "Title, artist, album…")
+            .searchFocused($isSearchFocused)
+            .onChange(of: isSearchFocused) { model.setEditingText(isSearchFocused, in: id) }
+            .onDisappear { model.setEditingText(false, in: id) }
             .navigationTitle(title)
             .navigationSubtitle(summary(of: visibleTracks))
             .onAppear(perform: refreshVisibleTracks)
@@ -57,10 +63,10 @@ struct TrackTable: View {
                 presenting: tracksToRemove
             ) { tracks in
                 Button("Remove and Move to Trash", role: .destructive) {
-                    Task { await model.removeTracks(tracks, movingFilesToTrash: true) }
+                    model.removeTracks(tracks, movingFilesToTrash: true)
                 }
                 Button("Remove from Collection Only") {
-                    Task { await model.removeTracks(tracks, movingFilesToTrash: false) }
+                    model.removeTracks(tracks, movingFilesToTrash: false)
                 }
                 Button("Cancel", role: .cancel) {}
             } message: { tracks in
@@ -83,8 +89,8 @@ struct TrackTable: View {
         case 1: "1 playlist and "
         default: "\(playlists) playlists and "
         }
-        return "This also removes \(pronoun) from \(fromPlaylists)any play history. Rekordbox needs to be closed. "
-            + "Crate backs up your library before its first change each session."
+        return "This also removes \(pronoun) from \(fromPlaylists)any play history, when you apply your changes. "
+            + "Until then, you can undo it or discard it in Changes."
     }
 
     private func summary(of tracks: [Track]) -> String {

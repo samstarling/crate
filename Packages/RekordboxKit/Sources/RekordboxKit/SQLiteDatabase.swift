@@ -10,9 +10,13 @@ final class SQLiteDatabase {
 
     private var handle: OpaquePointer?
 
-    enum Value {
+    /// A value in any of SQLite's storage classes, so rows can be recorded and restored exactly.
+    enum Value: Hashable, Sendable {
         case text(String)
         case int(Int)
+        case real(Double)
+        case blob(Data)
+        case null
     }
 
     enum Access {
@@ -75,6 +79,12 @@ final class SQLiteDatabase {
             let result = switch value {
             case .text(let text): sqlite3_bind_text(statement, position, text, -1, SQLITE_TRANSIENT)
             case .int(let int): sqlite3_bind_int64(statement, position, Int64(int))
+            case .real(let real): sqlite3_bind_double(statement, position, real)
+            case .blob(let data) where data.isEmpty:
+                // An empty Data has no bytes to point at, and binding a nil pointer would store NULL.
+                sqlite3_bind_zeroblob(statement, position, 0)
+            case .blob(let data): data.withUnsafeBytes { sqlite3_bind_blob(statement, position, $0.baseAddress, Int32(data.count), SQLITE_TRANSIENT) }
+            case .null: sqlite3_bind_null(statement, position)
             }
             guard result == SQLITE_OK else { throw lastError() }
         }
@@ -108,6 +118,30 @@ final class SQLiteDatabase {
 
         func int(_ column: Int32) -> Int {
             Int(sqlite3_column_int64(statement, column))
+        }
+
+        /// The column's value, in whichever storage class it has.
+        func value(_ column: Int32) -> Value {
+            switch sqlite3_column_type(statement, column) {
+            case SQLITE_INTEGER: .int(int(column))
+            case SQLITE_FLOAT: .real(sqlite3_column_double(statement, column))
+            case SQLITE_TEXT: .text(string(column) ?? "")
+            case SQLITE_BLOB:
+                // SQLite returns a nil pointer for an empty blob.
+                if let bytes = sqlite3_column_blob(statement, column) {
+                    .blob(Data(bytes: bytes, count: Int(sqlite3_column_bytes(statement, column))))
+                } else {
+                    .blob(Data())
+                }
+            default: .null
+            }
+        }
+
+        /// Every column, by name.
+        func values() -> [String: Value] {
+            Dictionary(uniqueKeysWithValues: (0..<sqlite3_column_count(statement)).map { column in
+                (String(cString: sqlite3_column_name(statement, column)), value(column))
+            })
         }
     }
 }
