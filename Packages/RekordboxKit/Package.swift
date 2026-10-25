@@ -15,6 +15,11 @@ let package = Package(
             name: "RekordboxKit",
             dependencies: [.product(name: "SQLCipher", package: "SQLCipher.swift")]
         ),
+        .testTarget(
+            name: "RekordboxKitTests",
+            dependencies: ["RekordboxKit"],
+            resources: [.copy("Fixtures")]
+        ),
     ],
     // Matches the app target, which also builds in Swift 5 mode.
     swiftLanguageModes: [.v5]

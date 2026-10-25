@@ -30,7 +30,7 @@ public struct RekordboxLibrary: Sendable {
 
     /// Rekordbox encrypts `master.db` with SQLCipher 4 using this fixed key, which is the same for
     /// every install (see https://github.com/dylanljones/pyrekordbox).
-    private static let databaseKey = "402fd482c38817c35ffa8ffb8c7d93143b749e7d315df7a81732a1ff43608497"
+    static let databaseKey = "402fd482c38817c35ffa8ffb8c7d93143b749e7d315df7a81732a1ff43608497"
 
     /// Loads the library in `folder` (the directory containing `master.db`).
     ///
@@ -344,7 +344,7 @@ public struct RekordboxLibrary: Sendable {
         in folder: URL,
         _ body: (SQLiteDatabase, _ nextUpdateCount: () -> Int, _ now: String) throws -> Void
     ) throws {
-        let database = try SQLiteDatabase(url: folder.appending(path: "master.db"), key: databaseKey, readOnly: false)
+        let database = try SQLiteDatabase(url: folder.appending(path: "master.db"), key: databaseKey, access: .readWrite)
         let now = timestampFormatter.string(from: .now)
 
         try database.transaction {

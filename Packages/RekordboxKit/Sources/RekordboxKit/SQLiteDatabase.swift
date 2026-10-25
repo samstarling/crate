@@ -15,8 +15,18 @@ final class SQLiteDatabase {
         case int(Int)
     }
 
-    init(url: URL, key: String? = nil, readOnly: Bool = true) throws {
-        let flags = readOnly ? SQLITE_OPEN_READONLY : SQLITE_OPEN_READWRITE
+    enum Access {
+        case readOnly, readWrite
+        /// Read-write, creating the file if it doesn't exist.
+        case create
+    }
+
+    init(url: URL, key: String? = nil, access: Access = .readOnly) throws {
+        let flags = switch access {
+        case .readOnly: SQLITE_OPEN_READONLY
+        case .readWrite: SQLITE_OPEN_READWRITE
+        case .create: SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE
+        }
         guard sqlite3_open_v2(url.path, &handle, flags, nil) == SQLITE_OK else {
             let message = handle.map { String(cString: sqlite3_errmsg($0)) } ?? "Unknown error"
             sqlite3_close(handle)

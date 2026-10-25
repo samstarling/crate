@@ -1,0 +1,5 @@
+# SwiftPM build output (when building or testing the package with `swift build` / `swift test`)
+.build/
+.swiftpm/
+# The app's workspace pins dependency versions; this one is only created by command-line builds.
+Package.resolved
