@@ -4,6 +4,10 @@ name: Release
 # tags the release and creates a GitHub Release, and the build job then attaches a signed,
 # notarized app. (Both live in one workflow because releases made with GITHUB_TOKEN don't
 # trigger other workflows.)
+#
+# release-please uses RELEASE_PLEASE_TOKEN, a fine-grained token for this repo with read/write
+# access to Contents, Issues and Pull requests, so that CI runs on its Release PR. PRs opened
+# with GITHUB_TOKEN don't trigger workflows, so the required checks would never pass.
 on:
   push:
     branches: [main]
@@ -23,6 +27,7 @@ jobs:
       - uses: googleapis/release-please-action@v4
         id: release
         with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 

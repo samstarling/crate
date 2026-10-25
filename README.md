@@ -40,7 +40,7 @@ The Rekordbox reading and writing lives in a separate Swift package, `Packages/R
 
 ## Contributing
 
-Commits follow [Conventional Commits](https://www.conventionalcommits.org/), which is how releases get their version numbers:
+Changes go through pull requests; `main` is protected and can't be pushed to directly. PRs are squash-merged, so the **PR title** becomes the commit on `main`, and it must follow [Conventional Commits](https://www.conventionalcommits.org/). That's how releases get their version numbers:
 
 | Prefix | Example | Release |
 | --- | --- | --- |
@@ -48,7 +48,7 @@ Commits follow [Conventional Commits](https://www.conventionalcommits.org/), whi
 | `feat:` | `feat: show smart playlists` | minor |
 | `feat!:` or a `BREAKING CHANGE:` footer | `feat!: drop Rekordbox 6 support` | major |
 
-`docs:`, `refactor:`, `test:`, `ci:`, `chore:` and others don't trigger a release on their own. To have Git check your messages, run:
+`docs:`, `refactor:`, `test:`, `ci:`, `chore:` and others don't trigger a release on their own. A check on each PR enforces the title format, and CI must pass before merging. To check your own commit messages locally too, run:
 
 ```sh
 git config core.hooksPath .githooks
@@ -58,9 +58,15 @@ git config core.hooksPath .githooks
 
 Releases are automated with [release-please](https://github.com/googleapis/release-please):
 
-1. Every push to `main` updates an open **Release PR** with the next version number and a changelog.
+1. Every merge to `main` updates an open **Release PR** with the next version number and a changelog.
 2. Merging that PR tags the release and creates a GitHub Release.
 3. CI then builds the app, signs it with Developer ID, notarizes and staples it, and attaches a `.dmg` and a `.zip`.
+
+The rules protecting `main` live in `.github/rulesets/main.json`. GitHub doesn't read that file automatically, so after changing it, re-apply it with:
+
+```sh
+gh api -X PUT repos/samstarling/crate/rulesets/$(gh api repos/samstarling/crate/rulesets --jq '.[] | select(.name == "main") | .id') --input .github/rulesets/main.json
+```
 
 ## Licence
 

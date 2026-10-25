@@ -7,6 +7,7 @@ on:
 
 jobs:
   build:
+    name: Build and test
     # macOS 26 ships Xcode 26, which is needed to compile AppIcon.icon.
     runs-on: macos-26
     steps:
