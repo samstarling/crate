@@ -54,6 +54,25 @@ struct PendingChangeTests {
         #expect(changed.tracksByID[LibraryFixture.copperSun]?.color?.name == "Intense")
     }
 
+    @Test func aBatchMatchesApplyingChangesOneAtATime() throws {
+        let changes: [PendingChange] = [
+            .setColor(colorID: 1, trackIDs: [LibraryFixture.copperSun, LibraryFixture.softMachines]),
+            .remove(trackIDs: [LibraryFixture.nightDrive], movingFilesToTrash: false),
+            .setColor(colorID: 5, trackIDs: [LibraryFixture.softMachines]),
+        ]
+        let batch = library.applying(changes)
+        let oneByOne = changes.reduce(library) { $0.applying([$1]) }
+
+        #expect(batch.tracks == oneByOne.tracks)
+        #expect(batch.tracks.map(\.libraryIndex) == [0, 1])
+        #expect(batch.tracksByID == oneByOne.tracksByID)
+        #expect(batch.playlists == oneByOne.playlists)
+        for comparator in [KeyPathComparator(\Track.colorSortKey), KeyPathComparator(\.title, comparator: .localizedStandard)] {
+            #expect(batch.sorted(batch.tracks, by: comparator).map(\.id) == oneByOne.sorted(oneByOne.tracks, by: comparator).map(\.id))
+        }
+        #expect(batch.tracksByID[LibraryFixture.softMachines]?.color?.name == "Melodic")
+    }
+
     // MARK: Writing
 
     @Test func applyingWritesEveryChangeInOneTransaction() throws {

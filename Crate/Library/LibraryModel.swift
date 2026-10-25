@@ -22,9 +22,11 @@ final class LibraryModel {
     /// Changes applied to the open library since Crate opened it, newest first, so they can be reverted.
     private(set) var appliedChanges: [AppliedChange]
     private(set) var isLoading = false
-    /// Whether Crate is writing to the library (applying or reverting), when other writes, and
-    /// undoing or redoing, have to wait.
-    var isWriting: Bool { writesInProgress > 0 }
+    /// Whether Crate is applying or reverting changes, from writing to the library through moving
+    /// files and reloading. Other writes, undo, redo and discarding wait until it's done.
+    var isWriting: Bool { operationsInProgress > 0 }
+    /// Whether a text field (the search field) is being edited, so Edit ▸ Undo goes to it.
+    var isEditingText = false
     var alert: AppAlert?
 
     /// Steps Edit ▸ Undo goes back through, newest last.
@@ -32,7 +34,7 @@ final class LibraryModel {
     /// Steps Edit ▸ Redo goes forward through, newest last.
     private(set) var redoSteps: [ChangeStep] = []
 
-    private var writesInProgress = 0
+    private var operationsInProgress = 0
     /// Libraries already backed up this session, so we only back up before the first write.
     @ObservationIgnored private var backedUpLibraries = Set<URL>()
     /// The most recent write, so the next one can wait for it.
@@ -76,7 +78,9 @@ final class LibraryModel {
                 redoSteps = []
             }
             pendingChanges = pendingChanges.compactMap { $0.revalidated(against: saved) }
-            // Steps that staged changes which have since been dropped can't be undone.
+            undoSteps = undoSteps.compactMap { $0.revalidated(against: saved) }
+            redoSteps = redoSteps.compactMap { $0.revalidated(against: saved) }
+            // Undoing a stage step removes its change from the pending list, so it has to be there.
             let pendingIDs = Set(pendingChanges.map(\.id))
             undoSteps.removeAll { step in
                 if case .stage(let change, _) = step { !pendingIDs.contains(change.id) } else { false }
@@ -143,8 +147,16 @@ final class LibraryModel {
     /// Returns once no write is in progress.
     func waitForWrites() async {
         while isWriting {
-            await latestWrite?.value
+            try? await Task.sleep(for: .milliseconds(50))
         }
+    }
+
+    /// Runs `body` with `isWriting` set, so nothing else changes the library or the pending list
+    /// meanwhile.
+    private func whileWriting<T>(_ body: () async throws -> T) async rethrows -> T {
+        operationsInProgress += 1
+        defer { operationsInProgress -= 1 }
+        return try await body()
     }
 
     // MARK: Pending changes
@@ -167,8 +179,10 @@ final class LibraryModel {
         record(.stage(staged, actionName: actionName))
     }
 
-    /// Discards pending changes, so they won't be applied.
+    /// Discards pending changes, so they won't be applied. Not while applying: the changes being
+    /// written can't be taken back.
     func discard(_ changes: [StagedChange]) {
+        guard !isWriting else { return }
         let discarded = remove(changes)
         guard !discarded.isEmpty else { return }
         record(.discard(discarded))
@@ -214,7 +228,11 @@ final class LibraryModel {
     /// Crate reloads it and keeps the pending changes, so the user can review and apply them again.
     func applyPendingChanges() async {
         guard let saved = savedLibrary, !pendingChanges.isEmpty, !isWriting else { return }
-        let staged = pendingChanges
+        await whileWriting { await apply(pendingChanges, to: saved) }
+    }
+
+    private func apply(_ staged: [StagedChange], to saved: RekordboxLibrary) async {
+        let stepsBefore = undoSteps.count
         do {
             let (changeSet, trashed) = try await write(staged.map(\.change), to: saved)
             let applied = AppliedChange(
@@ -229,11 +247,15 @@ final class LibraryModel {
             // Only the changes that were applied: more may have been staged while writing.
             let appliedIDs = Set(staged.map(\.id))
             pendingChanges.removeAll { appliedIDs.contains($0.id) }
-            // Staging them is now part of applying them, so undo reverts the whole batch.
+            // Changes staged while writing come after applying, so undo takes them back first.
+            let stagedWhileWriting = Array(undoSteps.dropFirst(stepsBefore))
+            undoSteps.removeLast(stagedWhileWriting.count)
+            // Staging the applied changes is now part of applying them, so undo reverts the whole batch.
             undoSteps.removeAll { step in
                 if case .stage(let change, _) = step { appliedIDs.contains(change.id) } else { false }
             }
             record(.apply(applied.id))
+            undoSteps.append(contentsOf: stagedWhileWriting)
             await reload()
         } catch is RekordboxLibrary.LibraryChanged {
             await reload()
@@ -249,8 +271,9 @@ final class LibraryModel {
     /// Reverts applied changes, putting back everything they changed in the library and any files
     /// moved to the Trash.
     func revert(_ applied: AppliedChange) async {
+        guard !isWriting else { return }
         do {
-            if try await performRevert(applied.id) {
+            if try await whileWriting({ try await performRevert(applied.id) }) {
                 record(.revert(applied.id))
             }
         } catch {
@@ -260,8 +283,9 @@ final class LibraryModel {
 
     /// Applies reverted changes again.
     func applyAgain(_ applied: AppliedChange) async {
+        guard !isWriting else { return }
         do {
-            if try await performApplyAgain(applied.id) {
+            if try await whileWriting({ try await performApplyAgain(applied.id) }) {
                 record(.apply(applied.id))
             }
         } catch {
@@ -269,12 +293,11 @@ final class LibraryModel {
         }
     }
 
-    /// Returns whether the changes were reverted: not if they already were, or another write is in
-    /// progress. Throws `RekordboxLibrary.CannotRevert` if something they touched has been changed
-    /// again since.
+    /// Returns whether the changes were reverted: not if they already were. Throws
+    /// `RekordboxLibrary.CannotRevert` if something they touched has been changed again since.
     @discardableResult
     private func performRevert(_ id: AppliedChange.ID) async throws -> Bool {
-        guard !isWriting, let index = appliedChanges.firstIndex(where: { $0.id == id }), !appliedChanges[index].isReverted else { return false }
+        guard let index = appliedChanges.firstIndex(where: { $0.id == id }), !appliedChanges[index].isReverted else { return false }
         let applied = appliedChanges[index]
         _ = try await serialised { try RekordboxLibrary.revert(applied.changes, in: applied.libraryLocation) }
         let failures = await Task.detached(priority: .userInitiated) { Self.restoreFromTrash(applied.trashedFiles) }.value
@@ -292,10 +315,10 @@ final class LibraryModel {
     }
 
     /// Writes reverted changes again, checked against the library as it is now. Returns whether they
-    /// were written: not if they weren't reverted, or another write is in progress.
+    /// were written: not if they weren't reverted.
     @discardableResult
     private func performApplyAgain(_ id: AppliedChange.ID) async throws -> Bool {
-        guard !isWriting, let saved = savedLibrary, let index = appliedChanges.firstIndex(where: { $0.id == id }),
+        guard let saved = savedLibrary, let index = appliedChanges.firstIndex(where: { $0.id == id }),
               appliedChanges[index].isReverted else { return false }
         let changes = appliedChanges[index].pendingChanges.compactMap { $0.revalidated(against: saved) }
         guard !changes.isEmpty else {
@@ -363,6 +386,22 @@ final class LibraryModel {
             case .apply, .revert: true
             }
         }
+
+        /// The same step against a reloaded library, with its changes checked the way pending
+        /// changes are; `nil` if none of its changes are left.
+        func revalidated(against library: RekordboxLibrary) -> ChangeStep? {
+            switch self {
+            case .stage(let change, let actionName):
+                return change.revalidated(against: library).map { .stage($0, actionName: actionName) }
+            case .discard(let changes):
+                let kept = changes.compactMap { positioned in
+                    positioned.change.revalidated(against: library).map { PositionedChange(change: $0, position: positioned.position) }
+                }
+                return kept.isEmpty ? nil : .discard(kept)
+            case .apply, .revert:
+                return self
+            }
+        }
     }
 
     struct PositionedChange {
@@ -370,8 +409,10 @@ final class LibraryModel {
         let position: Int
     }
 
-    var canUndo: Bool { undoSteps.last.map { !($0.writes && isWriting) } ?? false }
-    var canRedo: Bool { redoSteps.last.map { !($0.writes && isWriting) } ?? false }
+    // Nothing can be undone or redone while applying or reverting: the pending list and the
+    // library are both changing.
+    var canUndo: Bool { !isWriting && !undoSteps.isEmpty }
+    var canRedo: Bool { !isWriting && !redoSteps.isEmpty }
     var undoTitle: String { undoSteps.last.map { "Undo \($0.actionName)" } ?? "Undo" }
     var redoTitle: String { redoSteps.last.map { "Redo \($0.actionName)" } ?? "Redo" }
 
@@ -384,7 +425,7 @@ final class LibraryModel {
     func undo() async {
         guard canUndo, let step = undoSteps.popLast() else { return }
         do {
-            try await perform(step, undoing: true)
+            try await whileWriting { try await perform(step, undoing: true) }
             redoSteps.append(step)
         } catch {
             undoSteps.append(step)
@@ -395,7 +436,7 @@ final class LibraryModel {
     func redo() async {
         guard canRedo, let step = redoSteps.popLast() else { return }
         do {
-            try await perform(step, undoing: false)
+            try await whileWriting { try await perform(step, undoing: false) }
             undoSteps.append(step)
         } catch {
             redoSteps.append(step)
@@ -420,8 +461,6 @@ final class LibraryModel {
     /// first time this session.
     private func serialised<T: Sendable>(_ write: @escaping @Sendable () throws -> T) async throws -> T {
         guard let location = savedLibrary?.location else { throw CancellationError() }
-        writesInProgress += 1
-        defer { writesInProgress -= 1 }
         let previous = latestWrite
         let task = Task {
             await previous?.value

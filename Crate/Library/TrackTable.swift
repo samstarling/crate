@@ -15,6 +15,7 @@ struct TrackTable: View {
     /// Empty means "playlist order".
     @State private var sortOrder: [KeyPathComparator<Track>] = []
     @State private var searchText = ""
+    @FocusState private var isSearchFocused: Bool
     /// Tracks waiting for the user to confirm removing them from the collection.
     @State private var tracksToRemove: [Track]?
 
@@ -45,6 +46,9 @@ struct TrackTable: View {
             onRemove: { tracksToRemove = $0 }
         )
             .searchable(text: $searchText, placement: .toolbar, prompt: "Title, artist, album…")
+            .searchFocused($isSearchFocused)
+            .onChange(of: isSearchFocused) { model.isEditingText = isSearchFocused }
+            .onDisappear { model.isEditingText = false }
             .navigationTitle(title)
             .navigationSubtitle(summary(of: visibleTracks))
             .onAppear(perform: refreshVisibleTracks)

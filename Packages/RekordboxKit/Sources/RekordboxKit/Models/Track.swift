@@ -3,7 +3,7 @@ import Foundation
 public struct Track: Identifiable, Hashable, Sendable {
     public let id: String
     /// Position in `RekordboxLibrary.tracks`, used to look up precomputed sort ranks.
-    public let libraryIndex: Int
+    public internal(set) var libraryIndex: Int
     public let title: String
     public let artist: String
     public let album: String

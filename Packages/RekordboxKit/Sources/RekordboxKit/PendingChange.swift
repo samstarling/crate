@@ -72,37 +72,53 @@ public struct StagedChange: Identifiable, Hashable, Sendable {
 
 extension RekordboxLibrary {
     /// This library with `changes` made in memory, as it will be once they're applied.
+    ///
+    /// The whole batch is replayed in one pass: colours are set, removals are collected, and the
+    /// library is rebuilt (renumbering tracks and re-sorting) at most once, however many changes
+    /// there are.
     public func applying(_ changes: [PendingChange]) -> RekordboxLibrary {
-        changes.reduce(self) { library, change in library.applying(change) }
-    }
-
-    private func applying(_ change: PendingChange) -> RekordboxLibrary {
+        guard !changes.isEmpty else { return self }
         var library = self
-        switch change {
-        case .setColor(let colorID, let ids):
-            let color = colors.first { $0.id == colorID }
-            for id in ids {
-                guard var track = library.tracksByID[id] else { continue }
-                track.color = color
-                library.tracks[track.libraryIndex] = track
-                library.tracksByID[id] = track
+        var recoloured = Set<Track.ID>()
+        var removed = Set<Track.ID>()
+        for change in changes {
+            switch change {
+            case .setColor(let colorID, let ids):
+                let color = colors.first { $0.id == colorID }
+                for id in ids {
+                    guard let index = tracksByID[id]?.libraryIndex else { continue }
+                    library.tracks[index].color = color
+                    recoloured.insert(id)
+                }
+            case .remove(let ids, _):
+                removed.formUnion(ids)
+            }
+        }
+
+        guard !removed.isEmpty else {
+            // Only colours changed, so only the colour ranks need recomputing.
+            for id in recoloured {
+                if let index = tracksByID[id]?.libraryIndex {
+                    library.tracksByID[id] = library.tracks[index]
+                }
             }
             library.sortRanks[\Track.colorSortKey] = Self.ranks(library.tracks, \.colorSortKey, by: <)
             return library
-
-        case .remove(let ids, _):
-            let removed = Set(ids)
-            // Tracks are indexed by position, which changes for every track after a removed one.
-            let remaining = tracks.filter { !removed.contains($0.id) }.enumerated().map { $1.withLibraryIndex($0) }
-            return RekordboxLibrary(
-                location: location,
-                tracks: remaining,
-                playlists: playlists.map { $0.removingTracks(removed) },
-                colors: colors,
-                myTags: myTags,
-                updateCount: updateCount
-            )
         }
+
+        // Tracks are indexed by position, which changes for every track after a removed one.
+        var remaining = library.tracks.filter { !removed.contains($0.id) }
+        for index in remaining.indices {
+            remaining[index].libraryIndex = index
+        }
+        return RekordboxLibrary(
+            location: location,
+            tracks: remaining,
+            playlists: playlists.map { $0.removingTracks(removed) },
+            colors: colors,
+            myTags: myTags,
+            updateCount: updateCount
+        )
     }
 }
 
@@ -112,16 +128,5 @@ extension Playlist {
         playlist.trackIDs.removeAll(where: ids.contains)
         playlist.children = children?.map { $0.removingTracks(ids) }
         return playlist
-    }
-}
-
-extension Track {
-    func withLibraryIndex(_ libraryIndex: Int) -> Track {
-        Track(
-            id: id, libraryIndex: libraryIndex, title: title, artist: artist, album: album, genre: genre, label: label,
-            key: key, bpm: bpm, duration: duration, rating: rating, year: year, dateAdded: dateAdded, playCount: playCount,
-            color: color, comment: comment, fileURL: fileURL, artworkURL: artworkURL, analysisURL: analysisURL,
-            memoryCues: memoryCues, myTagIDs: myTagIDs
-        )
     }
 }

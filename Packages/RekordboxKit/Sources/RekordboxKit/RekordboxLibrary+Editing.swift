@@ -223,8 +223,8 @@ extension RekordboxLibrary {
     /// Runs `body` in a transaction on `master.db`, recording what it changes.
     ///
     /// The transaction holds SQLite's write lock from the start, so nothing can change the library
-    /// between checking `expectedUpdateCount` and writing. Rekordbox must not be running, or it may
-    /// overwrite the change.
+    /// between checking `expectedUpdateCount` and writing. If Rekordbox is open with an older copy of
+    /// the library, it may overwrite the change later, which the update count can't detect.
     ///
     /// - Parameter checkingUpdateCount: Whether to refuse unless the library's update count is
     ///   `expectedUpdateCount`. Only reverting, which checks each row instead, turns this off.

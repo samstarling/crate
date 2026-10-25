@@ -14,10 +14,12 @@ struct CrateApp: App {
 
     private var model: LibraryModel { appDelegate.model }
 
-    /// Sends an undo or redo to the text field being edited, if there is one. Returns whether there was.
-    private static func sendToTextField(_ action: Selector) -> Bool {
-        guard let textView = NSApp.keyWindow?.firstResponder as? NSTextView, let undoManager = textView.undoManager else { return false }
-        action == #selector(UndoManager.undo) ? undoManager.undo() : undoManager.redo()
+    /// Undoes (or redoes) typing in the text field being edited, if it has any to undo. Returns
+    /// whether it did.
+    private static func undoTyping(redo: Bool = false) -> Bool {
+        guard let textView = NSApp.keyWindow?.firstResponder as? NSTextView, let undoManager = textView.undoManager,
+              redo ? undoManager.canRedo : undoManager.canUndo else { return false }
+        redo ? undoManager.redo() : undoManager.undo()
         return true
     }
 
@@ -44,16 +46,18 @@ struct CrateApp: App {
             CommandGroup(replacing: .undoRedo) {
                 // Undo and Redo step through the changes in the Changes view, except while editing
                 // text (the search field), which has its own.
-                Button(model.undoTitle) {
-                    if !Self.sendToTextField(#selector(UndoManager.undo)) { Task { await model.undo() } }
+                // While searching, typing comes first; otherwise (or once there's no typing to
+                // undo) it's the changes.
+                Button(model.isEditingText ? "Undo" : model.undoTitle) {
+                    if !(model.isEditingText && Self.undoTyping()) { Task { await model.undo() } }
                 }
                 .keyboardShortcut("z")
-                .disabled(!model.canUndo)
-                Button(model.redoTitle) {
-                    if !Self.sendToTextField(#selector(UndoManager.redo)) { Task { await model.redo() } }
+                .disabled(!model.isEditingText && !model.canUndo)
+                Button(model.isEditingText ? "Redo" : model.redoTitle) {
+                    if !(model.isEditingText && Self.undoTyping(redo: true)) { Task { await model.redo() } }
                 }
                 .keyboardShortcut("z", modifiers: [.command, .shift])
-                .disabled(!model.canRedo)
+                .disabled(!model.isEditingText && !model.canRedo)
             }
             CommandMenu("Controls") {
                 Button(player.isPlaying ? "Pause" : "Play") { player.togglePlayPause() }
