@@ -1,4 +1,5 @@
 import AppKit
+import CryptoKit
 import Observation
 import RekordboxKit
 
@@ -21,11 +22,17 @@ final class LibraryModel {
     /// Changes applied to the open library since Crate opened it, newest first, so they can be reverted.
     private(set) var appliedChanges: [AppliedChange]
     private(set) var isLoading = false
-    private(set) var isApplying = false
+    /// Whether Crate is writing to the library (applying or reverting), when other writes, and
+    /// undoing or redoing, have to wait.
+    var isWriting: Bool { writesInProgress > 0 }
     var alert: AppAlert?
-    /// The main window's undo manager, so changes can be undone with ⌘Z.
-    @ObservationIgnored var undoManager: UndoManager?
 
+    /// Steps Edit ▸ Undo goes back through, newest last.
+    private(set) var undoSteps: [ChangeStep] = []
+    /// Steps Edit ▸ Redo goes forward through, newest last.
+    private(set) var redoSteps: [ChangeStep] = []
+
+    private var writesInProgress = 0
     /// Libraries already backed up this session, so we only back up before the first write.
     @ObservationIgnored private var backedUpLibraries = Set<URL>()
     /// The most recent write, so the next one can wait for it.
@@ -65,9 +72,15 @@ final class LibraryModel {
             if !isReload {
                 pendingChanges = []
                 appliedChanges = []
-                undoManager?.removeAllActions(withTarget: self)
+                undoSteps = []
+                redoSteps = []
             }
             pendingChanges = pendingChanges.compactMap { $0.revalidated(against: saved) }
+            // Steps that staged changes which have since been dropped can't be undone.
+            let pendingIDs = Set(pendingChanges.map(\.id))
+            undoSteps.removeAll { step in
+                if case .stage(let change, _) = step { !pendingIDs.contains(change.id) } else { false }
+            }
             savedLibrary = saved
             library = saved.applying(pendingChanges.map(\.change))
             UserDefaults.standard.set(folder.path, forKey: Self.locationDefaultsKey)
@@ -99,10 +112,12 @@ final class LibraryModel {
         await open(folder)
     }
 
-    /// If there are pending changes, asks whether to apply or discard them before `action` (for
-    /// example "quitting"), and does so. Returns whether to go ahead: `false` if the user cancels,
-    /// or if applying fails (then `alert` says why and the changes stay pending).
+    /// Waits for any write in progress, then, if there are pending changes, asks whether to apply or
+    /// discard them before `action` (for example "quitting"), and does so. Returns whether to go
+    /// ahead: `false` if the user cancels, or if applying fails (then `alert` says why and the
+    /// changes stay pending).
     func askToApplyPendingChanges(before action: String) async -> Bool {
+        await waitForWrites()
         guard !pendingChanges.isEmpty else { return true }
         let count = pendingChanges.count
         let alert = NSAlert()
@@ -125,6 +140,13 @@ final class LibraryModel {
         }
     }
 
+    /// Returns once no write is in progress.
+    func waitForWrites() async {
+        while isWriting {
+            await latestWrite?.value
+        }
+    }
+
     // MARK: Pending changes
 
     /// Sets the colour of tracks, as a pending change.
@@ -141,74 +163,78 @@ final class LibraryModel {
     private func stage(_ change: PendingChange, actionName: String) {
         guard let library, !change.trackIDs.isEmpty else { return }
         let staged = StagedChange(change, summary: change.summary(in: library))
-        pendingChanges.append(staged)
-        self.library = library.applying([change])
-        undoManager?.registerUndo(withTarget: self) { model in model.discard(staged) }
-        undoManager?.setActionName(actionName)
+        add([staged])
+        record(.stage(staged, actionName: actionName))
     }
 
-    /// Discards a pending change, so it won't be applied.
-    func discard(_ change: StagedChange) {
-        pendingChanges.removeAll { $0.id == change.id }
-        library = savedLibrary?.applying(pendingChanges.map(\.change))
+    /// Discards pending changes, so they won't be applied.
+    func discard(_ changes: [StagedChange]) {
+        let discarded = remove(changes)
+        guard !discarded.isEmpty else { return }
+        record(.discard(discarded))
     }
 
     func discardAllPendingChanges() {
-        pendingChanges = []
-        library = savedLibrary
-        undoManager?.removeAllActions(withTarget: self)
+        discard(pendingChanges)
     }
 
-    // MARK: Applying
+    /// Adds changes to the pending list, at the given positions or the end.
+    private func add(_ changes: [StagedChange], at positions: [Int]? = nil) {
+        if let positions {
+            for (change, position) in zip(changes, positions).sorted(by: { $0.1 < $1.1 }) {
+                pendingChanges.insert(change, at: min(position, pendingChanges.count))
+            }
+        } else {
+            pendingChanges.append(contentsOf: changes)
+        }
+        if positions == nil, let library {
+            self.library = library.applying(changes.map(\.change))
+        } else {
+            library = savedLibrary?.applying(pendingChanges.map(\.change))
+        }
+    }
+
+    /// Removes changes from the pending list, returning those that were in it with their positions.
+    private func remove(_ changes: [StagedChange]) -> [PositionedChange] {
+        let ids = Set(changes.map(\.id))
+        let removed = pendingChanges.enumerated()
+            .filter { ids.contains($0.element.id) }
+            .map { PositionedChange(change: $0.element, position: $0.offset) }
+        guard !removed.isEmpty else { return [] }
+        pendingChanges.removeAll { ids.contains($0.id) }
+        library = savedLibrary?.applying(pendingChanges.map(\.change))
+        return removed
+    }
+
+    // MARK: Applying and reverting
 
     /// Writes every pending change to the library's `master.db`, in one transaction, then reloads.
     ///
     /// If the library has changed since Crate loaded it (in Rekordbox, say), nothing is written:
     /// Crate reloads it and keeps the pending changes, so the user can review and apply them again.
     func applyPendingChanges() async {
-        guard let saved = savedLibrary, !pendingChanges.isEmpty, !isApplying else { return }
-        isApplying = true
-        defer { isApplying = false }
-
+        guard let saved = savedLibrary, !pendingChanges.isEmpty, !isWriting else { return }
         let staged = pendingChanges
-        let changes = staged.map(\.change)
-        let location = saved.location
-        let expectedUpdateCount = saved.updateCount
         do {
-            let changeSet = try await write(to: location) {
-                try RekordboxLibrary.apply(changes, in: location, expectedUpdateCount: expectedUpdateCount)
-            }
-
-            let files = changes.flatMap { change -> [URL] in
-                guard case .remove(let ids, true) = change else { return [] }
-                return ids.compactMap { saved.tracksByID[$0]?.fileURL }
-            }
-            let (trashed, failures) = await Task.detached(priority: .userInitiated) { Self.moveToTrash(files) }.value
-
+            let (changeSet, trashed) = try await write(staged.map(\.change), to: saved)
             let applied = AppliedChange(
                 summary: staged.count == 1 ? staged[0].summary : "\(staged.count) changes",
                 items: staged.count == 1 ? [] : staged.map(\.summary),
-                libraryLocation: location,
+                libraryLocation: saved.location,
+                pendingChanges: staged.map(\.change),
                 changes: changeSet,
                 trashedFiles: trashed
             )
             appliedChanges.insert(applied, at: 0)
-            pendingChanges = []
+            // Only the changes that were applied: more may have been staged while writing.
+            let appliedIDs = Set(staged.map(\.id))
+            pendingChanges.removeAll { appliedIDs.contains($0.id) }
+            // Staging them is now part of applying them, so undo reverts the whole batch.
+            undoSteps.removeAll { step in
+                if case .stage(let change, _) = step { appliedIDs.contains(change.id) } else { false }
+            }
+            record(.apply(applied.id))
             await reload()
-
-            // Undoing now means reverting what was applied, not discarding pending changes.
-            undoManager?.removeAllActions(withTarget: self)
-            undoManager?.registerUndo(withTarget: self) { model in
-                Task { await model.undo(applied) }
-            }
-            undoManager?.setActionName("Apply Changes")
-
-            if !failures.isEmpty {
-                alert = AppAlert(
-                    title: "Couldn\u{2019}t Move Files to the Trash",
-                    message: "Your changes were applied, but \(failures.formatted()) couldn\u{2019}t be moved to the Trash."
-                )
-            }
         } catch is RekordboxLibrary.LibraryChanged {
             await reload()
             alert = AppAlert(
@@ -220,76 +246,215 @@ final class LibraryModel {
         }
     }
 
-    // MARK: Reverting
-
     /// Reverts applied changes, putting back everything they changed in the library and any files
-    /// moved to the Trash. Throws `RekordboxLibrary.CannotRevert` if something they changed has
-    /// been changed again since.
-    func revert(_ applied: AppliedChange) async throws {
-        // Use the latest version: it may have been reverted since this was asked for.
-        guard let index = appliedChanges.firstIndex(where: { $0.id == applied.id }), !appliedChanges[index].isReverted else { return }
-        let applied = appliedChanges[index]
-        _ = try await write(to: applied.libraryLocation) { try RekordboxLibrary.revert(applied.changes, in: applied.libraryLocation) }
+    /// moved to the Trash.
+    func revert(_ applied: AppliedChange) async {
+        do {
+            if try await performRevert(applied.id) {
+                record(.revert(applied.id))
+            }
+        } catch {
+            alert = AppAlert(title: "Couldn\u{2019}t Revert", message: error.localizedDescription)
+        }
+    }
 
+    /// Applies reverted changes again.
+    func applyAgain(_ applied: AppliedChange) async {
+        do {
+            if try await performApplyAgain(applied.id) {
+                record(.apply(applied.id))
+            }
+        } catch {
+            alert = AppAlert(title: "Couldn\u{2019}t Apply Again", message: error.localizedDescription)
+        }
+    }
+
+    /// Returns whether the changes were reverted: not if they already were, or another write is in
+    /// progress. Throws `RekordboxLibrary.CannotRevert` if something they touched has been changed
+    /// again since.
+    @discardableResult
+    private func performRevert(_ id: AppliedChange.ID) async throws -> Bool {
+        guard !isWriting, let index = appliedChanges.firstIndex(where: { $0.id == id }), !appliedChanges[index].isReverted else { return false }
+        let applied = appliedChanges[index]
+        _ = try await serialised { try RekordboxLibrary.revert(applied.changes, in: applied.libraryLocation) }
         let failures = await Task.detached(priority: .userInitiated) { Self.restoreFromTrash(applied.trashedFiles) }.value
-        if let index = appliedChanges.firstIndex(where: { $0.id == applied.id }) {
+        if let index = appliedChanges.firstIndex(where: { $0.id == id }) {
             appliedChanges[index].revertedAt = .now
         }
         await reload()
         if !failures.isEmpty {
-            throw RevertError.filesNotRestored(failures)
+            alert = AppAlert(
+                title: "Couldn\u{2019}t Put Files Back",
+                message: "Your library was restored, but \(failures.formatted()) couldn\u{2019}t be put back from the Trash. You can drag them back from the Trash yourself."
+            )
         }
+        return true
     }
 
-    /// Reverts applied changes from Edit ▸ Undo, reporting any problem.
-    private func undo(_ applied: AppliedChange) async {
-        do {
-            try await revert(applied)
-        } catch {
-            alert = AppAlert(title: "Couldn\u{2019}t Undo", message: error.localizedDescription)
+    /// Writes reverted changes again, checked against the library as it is now. Returns whether they
+    /// were written: not if they weren't reverted, or another write is in progress.
+    @discardableResult
+    private func performApplyAgain(_ id: AppliedChange.ID) async throws -> Bool {
+        guard !isWriting, let saved = savedLibrary, let index = appliedChanges.firstIndex(where: { $0.id == id }),
+              appliedChanges[index].isReverted else { return false }
+        let changes = appliedChanges[index].pendingChanges.compactMap { $0.revalidated(against: saved) }
+        guard !changes.isEmpty else {
+            throw TracksGone()
         }
+        let (changeSet, trashed) = try await write(changes, to: saved)
+        if let index = appliedChanges.firstIndex(where: { $0.id == id }) {
+            appliedChanges[index].changes = changeSet
+            appliedChanges[index].trashedFiles = trashed
+            appliedChanges[index].revertedAt = nil
+        }
+        await reload()
+        return true
     }
 
-    enum RevertError: LocalizedError {
-        case filesNotRestored([String])
+    /// Writes changes to `saved`'s `master.db`, expecting it to be unchanged since it was loaded,
+    /// then moves files to the Trash for removals that ask for it.
+    private func write(_ changes: [PendingChange], to saved: RekordboxLibrary) async throws -> (ChangeSet, [TrashedFile]) {
+        let location = saved.location
+        let expectedUpdateCount = saved.updateCount
+        let changeSet = try await serialised {
+            try RekordboxLibrary.apply(changes, in: location, expectedUpdateCount: expectedUpdateCount)
+        }
+        let files = changes.flatMap { change -> [URL] in
+            guard case .remove(let ids, true) = change else { return [] }
+            return ids.compactMap { saved.tracksByID[$0]?.fileURL }
+        }
+        let (trashed, failures) = await Task.detached(priority: .userInitiated) { Self.moveToTrash(files) }.value
+        if !failures.isEmpty {
+            alert = AppAlert(
+                title: "Couldn\u{2019}t Move Files to the Trash",
+                message: "Your changes were applied, but \(failures.formatted()) couldn\u{2019}t be moved to the Trash."
+            )
+        }
+        return (changeSet, trashed)
+    }
 
-        var errorDescription: String? {
+    struct TracksGone: LocalizedError {
+        var errorDescription: String? { "The tracks these changes affected are no longer in your library." }
+    }
+
+    // MARK: Undo and redo
+
+    /// A step in the history of changes. Undo and redo move back and forth through these, so they
+    /// always match what the Changes view shows.
+    enum ChangeStep {
+        case stage(StagedChange, actionName: String)
+        case discard([PositionedChange])
+        case apply(AppliedChange.ID)
+        case revert(AppliedChange.ID)
+
+        var actionName: String {
             switch self {
-            case .filesNotRestored(let files):
-                "Your library was restored, but \(files.formatted()) couldn\u{2019}t be put back from the Trash. You can drag them back from the Trash yourself."
+            case .stage(_, let actionName): actionName
+            case .discard(let changes): changes.count == 1 ? "Discard Change" : "Discard Changes"
+            case .apply: "Apply Changes"
+            case .revert: "Revert"
             }
+        }
+
+        /// Whether undoing or redoing this step writes to the library.
+        var writes: Bool {
+            switch self {
+            case .stage, .discard: false
+            case .apply, .revert: true
+            }
+        }
+    }
+
+    struct PositionedChange {
+        let change: StagedChange
+        let position: Int
+    }
+
+    var canUndo: Bool { undoSteps.last.map { !($0.writes && isWriting) } ?? false }
+    var canRedo: Bool { redoSteps.last.map { !($0.writes && isWriting) } ?? false }
+    var undoTitle: String { undoSteps.last.map { "Undo \($0.actionName)" } ?? "Undo" }
+    var redoTitle: String { redoSteps.last.map { "Redo \($0.actionName)" } ?? "Redo" }
+
+    /// Records a step the user just took, which clears anything that could be redone.
+    private func record(_ step: ChangeStep) {
+        undoSteps.append(step)
+        redoSteps = []
+    }
+
+    func undo() async {
+        guard canUndo, let step = undoSteps.popLast() else { return }
+        do {
+            try await perform(step, undoing: true)
+            redoSteps.append(step)
+        } catch {
+            undoSteps.append(step)
+            alert = AppAlert(title: "Couldn\u{2019}t \(undoTitle)", message: error.localizedDescription)
+        }
+    }
+
+    func redo() async {
+        guard canRedo, let step = redoSteps.popLast() else { return }
+        do {
+            try await perform(step, undoing: false)
+            undoSteps.append(step)
+        } catch {
+            redoSteps.append(step)
+            alert = AppAlert(title: "Couldn\u{2019}t \(redoTitle)", message: error.localizedDescription)
+        }
+    }
+
+    private func perform(_ step: ChangeStep, undoing: Bool) async throws {
+        switch (step, undoing) {
+        case (.stage(let change, _), true): _ = remove([change])
+        case (.stage(let change, _), false): add([change])
+        case (.discard(let changes), true): add(changes.map(\.change), at: changes.map(\.position))
+        case (.discard(let changes), false): _ = remove(changes.map(\.change))
+        case (.apply(let id), true), (.revert(let id), false): try await performRevert(id)
+        case (.apply(let id), false), (.revert(let id), true): try await performApplyAgain(id)
         }
     }
 
     // MARK: Writing safely
 
-    /// Runs `write` against `master.db` in `location`, after backing up the library the first time
-    /// this session. Writes run one at a time.
-    private func write<T: Sendable>(to location: URL, _ write: @escaping @Sendable () throws -> T) async throws -> T {
+    /// Runs `write` against the library, one write at a time, after backing up the library the
+    /// first time this session.
+    private func serialised<T: Sendable>(_ write: @escaping @Sendable () throws -> T) async throws -> T {
+        guard let location = savedLibrary?.location else { throw CancellationError() }
+        writesInProgress += 1
+        defer { writesInProgress -= 1 }
         let previous = latestWrite
-        let needsBackup = !backedUpLibraries.contains(location)
-        let task = Task.detached(priority: .userInitiated) {
+        let task = Task {
             await previous?.value
-            if needsBackup {
-                try Self.backUp(location)
+            // Recorded before backing up, so a queued write doesn't back up again; forgotten if it fails.
+            if backedUpLibraries.insert(location).inserted {
+                do {
+                    try await Task.detached(priority: .userInitiated) { try Self.backUp(location) }.value
+                } catch {
+                    backedUpLibraries.remove(location)
+                    throw error
+                }
             }
-            return try write()
+            return try await Task.detached(priority: .userInitiated) { try write() }.value
         }
         latestWrite = Task { _ = await task.result }
-        let result = try await task.value
-        backedUpLibraries.insert(location)
-        return result
+        return try await task.value
     }
 
     // MARK: Files
 
-    /// Copies `master.db` (and any WAL files) to `~/Library/Application Support/Crate/Backups/<timestamp>/`,
-    /// keeping only the most recent backups.
+    /// Copies `master.db` (and any WAL files) to `~/Library/Application Support/Crate/Backups/<library>/<time>/`,
+    /// keeping each library's first backup (from before Crate changed anything) and its most recent ones.
     nonisolated private static func backUp(_ location: URL) throws {
         let fileManager = FileManager.default
-        let backups = URL.applicationSupportDirectory.appending(path: "Crate/Backups", directoryHint: .isDirectory)
-        let timestamp = Date.now.formatted(.iso8601.year().month().day().time(includingFractionalSeconds: false).timeSeparator(.omitted))
-        let destination = backups.appending(path: timestamp, directoryHint: .isDirectory)
+        let digest = SHA256.hash(data: Data(location.standardizedFileURL.path.utf8)).prefix(6).map { String(format: "%02x", $0) }.joined()
+        let backups = URL.applicationSupportDirectory.appending(path: "Crate/Backups/\(digest)", directoryHint: .isDirectory)
+        let timestamp = Date.now.formatted(.iso8601.year().month().day().time(includingFractionalSeconds: true).timeSeparator(.omitted))
+        var destination = backups.appending(path: timestamp, directoryHint: .isDirectory)
+        var attempt = 1
+        while fileManager.fileExists(atPath: destination.path) {
+            attempt += 1
+            destination = backups.appending(path: "\(timestamp)-\(attempt)", directoryHint: .isDirectory)
+        }
         try fileManager.createDirectory(at: destination, withIntermediateDirectories: true)
         for name in ["master.db", "master.db-wal", "master.db-shm"] {
             let file = location.appending(path: name)
@@ -298,9 +463,10 @@ final class LibraryModel {
             }
         }
 
-        // Backup folders are named by timestamp, so they sort oldest first.
+        // Backup folders are named by time, so they sort oldest first.
         let existing = (try? fileManager.contentsOfDirectory(at: backups, includingPropertiesForKeys: nil)) ?? []
-        for old in existing.filter(\.hasDirectoryPath).sorted(by: { $0.lastPathComponent < $1.lastPathComponent }).dropLast(backupsToKeep) {
+        let sorted = existing.filter(\.hasDirectoryPath).sorted { $0.lastPathComponent < $1.lastPathComponent }
+        for old in sorted.dropFirst().dropLast(backupsToKeep) {
             try? fileManager.removeItem(at: old)
         }
     }

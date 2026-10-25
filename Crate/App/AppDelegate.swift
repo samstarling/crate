@@ -5,7 +5,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let model = LibraryModel()
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard !model.pendingChanges.isEmpty else { return .terminateNow }
+        // Quitting mid-write would lose it, so wait for any write to finish first.
+        guard !model.pendingChanges.isEmpty || model.isWriting else { return .terminateNow }
         Task {
             let shouldQuit = await model.askToApplyPendingChanges(before: "quitting")
             sender.reply(toApplicationShouldTerminate: shouldQuit)

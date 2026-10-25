@@ -130,6 +130,42 @@ struct RevertTests {
         #expect(throws: RekordboxLibrary.CannotRevert.self) { try RekordboxLibrary.revert(changes, in: fixture.folder) }
     }
 
+    @Test func overlappingChangesRevertInReverseOrder() throws {
+        let original = try fixture.contents()
+        let red = try RekordboxLibrary.saveColor(
+            TrackColor(id: 2, name: "Intense"), forTrackIDs: [LibraryFixture.nightDrive], in: fixture.folder,
+            expectedUpdateCount: LibraryFixture.initialUpdateCount
+        )
+        let blue = try RekordboxLibrary.saveColor(
+            TrackColor(id: 7, name: "Breaksy"), forTrackIDs: [LibraryFixture.nightDrive], in: fixture.folder, expectedUpdateCount: red.updateCount
+        )
+        // Reverting the second refreshes the row's update number; the first must still revert.
+        try RekordboxLibrary.revert(blue, in: fixture.folder)
+        try RekordboxLibrary.revert(red, in: fixture.folder)
+        #expect(try fixture.contents() == original)
+    }
+
+    @Test func removalsFromTheSamePlaylistRevertInReverseOrder() throws {
+        let original = try fixture.contents()
+        let first = try RekordboxLibrary.removeTracks(
+            withIDs: [LibraryFixture.copperSun], in: fixture.folder, expectedUpdateCount: LibraryFixture.initialUpdateCount
+        )
+        let second = try RekordboxLibrary.removeTracks(withIDs: [LibraryFixture.nightDrive], in: fixture.folder, expectedUpdateCount: first.updateCount)
+        try RekordboxLibrary.revert(second, in: fixture.folder)
+        try RekordboxLibrary.revert(first, in: fixture.folder)
+        #expect(try fixture.contents() == original)
+    }
+
+    @Test func emptyBlobsSurviveARoundTrip() throws {
+        // SQLite hands back no bytes at all for an empty blob.
+        try fixture.database.execute("UPDATE djmdContent SET Commnt = X'' WHERE ID = '\(LibraryFixture.nightDrive)'")
+        let original = try fixture.contents()
+        let changes = try removeNightDrive()
+        try RekordboxLibrary.revert(changes, in: fixture.folder)
+        #expect(try fixture.contents() == original)
+        #expect(try fixture.count("SELECT count(*) FROM djmdContent WHERE typeof(Commnt) = 'blob' AND length(Commnt) = 0") == 1)
+    }
+
     @Test func revertingTwiceIsRefused() throws {
         let changes = try removeNightDrive()
         try RekordboxLibrary.revert(changes, in: fixture.folder)

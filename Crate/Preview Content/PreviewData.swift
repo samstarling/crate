@@ -110,13 +110,13 @@ extension StagedChange {
 extension AppliedChange {
     static let previews: [AppliedChange] = {
         let location = RekordboxLibrary.preview.location
-        var reverted = AppliedChange(summary: "Set 2 tracks to Melodic", libraryLocation: location, changes: .none, date: .now.addingTimeInterval(-3_600))
+        var reverted = AppliedChange(summary: "Set 2 tracks to Melodic", libraryLocation: location, pendingChanges: [], changes: .none, date: .now.addingTimeInterval(-3_600))
         reverted.revertedAt = .now.addingTimeInterval(-3_000)
         return [
             AppliedChange(
                 summary: "3 changes",
                 items: ["Set \u{201C}Copper Sun\u{201D} to Moody", "Clear the colour of 2 tracks", "Remove \u{201C}Old Demo\u{201D} and move its file to the Trash"],
-                libraryLocation: location, changes: .none,
+                libraryLocation: location, pendingChanges: [], changes: .none,
                 trashedFiles: [TrashedFile(original: URL(filePath: "/Music/Old Demo.mp3"), inTrash: URL(filePath: "/Users/me/.Trash/Old Demo.mp3"))],
                 date: .now.addingTimeInterval(-300)
             ),

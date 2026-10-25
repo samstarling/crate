@@ -5,9 +5,6 @@ import SwiftUI
 struct ChangesView: View {
     @Environment(LibraryModel.self) private var model
     @State private var selection = Set<Row>()
-    /// The entry being reverted, to show progress in its row.
-    @State private var reverting: AppliedChange.ID?
-    @State private var revertError: String?
     @State private var isConfirmingDiscardAll = false
 
     /// A row in the list: a pending change or an applied one.
@@ -38,14 +35,6 @@ struct ChangesView: View {
         } message: {
             Text("They haven\u{2019}t been applied, so your Rekordbox library won\u{2019}t change.")
         }
-        .alert(
-            "Couldn\u{2019}t Revert",
-            isPresented: Binding(get: { revertError != nil }, set: { if !$0 { revertError = nil } })
-        ) {
-            Button("OK") {}
-        } message: {
-            Text(revertError ?? "")
-        }
     }
 
     private var list: some View {
@@ -73,8 +62,12 @@ struct ChangesView: View {
             if !pending.isEmpty {
                 Button(pending.count == 1 ? "Discard Change" : "Discard \(pending.count) Changes") { discard(pending) }
             }
-            if let entry = revertibleEntry(in: rows) {
-                Button("Revert") { revert(entry) }
+            if let applied = selectedAppliedChange(in: rows) {
+                if applied.isReverted {
+                    Button("Apply Again") { Task { await model.applyAgain(applied) } }
+                } else {
+                    Button("Revert") { Task { await model.revert(applied) } }
+                }
             }
         }
         .onDeleteCommand {
@@ -88,10 +81,10 @@ struct ChangesView: View {
                 .foregroundStyle(.secondary)
             Spacer()
             Button("Discard All\u{2026}") { isConfirmingDiscardAll = true }
-                .disabled(model.pendingChanges.isEmpty || model.isApplying)
+                .disabled(model.pendingChanges.isEmpty || model.isWriting)
             Button("Apply Changes") { Task { await model.applyPendingChanges() } }
                 .buttonStyle(.borderedProminent)
-                .disabled(model.pendingChanges.isEmpty || model.isApplying)
+                .disabled(model.pendingChanges.isEmpty || model.isWriting)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
@@ -100,7 +93,7 @@ struct ChangesView: View {
     }
 
     private var status: String {
-        if model.isApplying { return "Applying changes\u{2026}" }
+        if model.isWriting { return "Saving to your library\u{2026}" }
         switch model.pendingChanges.count {
         case 0: return "No changes waiting to be applied"
         case 1: return "1 change waiting to be applied"
@@ -143,10 +136,7 @@ struct ChangesView: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            if reverting == entry.id {
-                ProgressView()
-                    .controlSize(.small)
-            } else if entry.isReverted {
+            if entry.isReverted {
                 Text("Reverted")
                     .foregroundStyle(.secondary)
             }
@@ -168,30 +158,16 @@ struct ChangesView: View {
         model.pendingChanges.filter { rows.contains(.pending($0.id)) }
     }
 
-    /// The applied entry selected, if exactly one is and it can be reverted.
-    private func revertibleEntry(in rows: Set<Row>) -> AppliedChange? {
-        let entries = model.appliedChanges.filter { rows.contains(.applied($0.id)) }
-        guard entries.count == 1, let entry = entries.first, !entry.isReverted, reverting == nil, !model.isApplying else { return nil }
-        return entry
+    /// The applied change selected, if exactly one is and nothing is being written.
+    private func selectedAppliedChange(in rows: Set<Row>) -> AppliedChange? {
+        let applied = model.appliedChanges.filter { rows.contains(.applied($0.id)) }
+        guard applied.count == 1, !model.isWriting else { return nil }
+        return applied.first
     }
 
     private func discard(_ changes: [StagedChange]) {
-        for change in changes {
-            model.discard(change)
-        }
+        model.discard(changes)
         selection.subtract(changes.map { .pending($0.id) })
-    }
-
-    private func revert(_ entry: AppliedChange) {
-        reverting = entry.id
-        Task {
-            defer { reverting = nil }
-            do {
-                try await model.revert(entry)
-            } catch {
-                revertError = error.localizedDescription
-            }
-        }
     }
 }
 

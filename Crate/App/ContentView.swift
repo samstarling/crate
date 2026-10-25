@@ -17,34 +17,34 @@ enum SidebarItem: Hashable {
 struct ContentView: View {
     @Environment(LibraryModel.self) private var model
     @Environment(PlayerModel.self) private var player
-    @Environment(\.undoManager) private var undoManager
     @State private var selection: SidebarItem? = .collection
 
     var body: some View {
-        Group {
-            if let library = model.library {
-                NavigationSplitView {
-                    SidebarView(library: library, pendingChangeCount: model.pendingChanges.count, selection: $selection)
-                } detail: {
-                    detail(for: library)
-                }
-            } else if model.isLoading {
-                ProgressView("Loading library…")
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ContentUnavailableView {
-                    Label("No Library", systemImage: "music.note.house")
-                } description: {
-                    Text("Open a Rekordbox library folder to browse your collection.")
-                } actions: {
-                    Button("Open Library…") { Task { await model.showOpenPanel() } }
-                        .buttonStyle(.borderedProminent)
+        // Below the split view rather than over it, so it never covers the bottom of the content.
+        VStack(spacing: 0) {
+            Group {
+                if let library = model.library {
+                    NavigationSplitView {
+                        SidebarView(library: library, pendingChangeCount: model.pendingChanges.count, selection: $selection)
+                    } detail: {
+                        detail(for: library)
+                    }
+                } else if model.isLoading {
+                    ProgressView("Loading library…")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    ContentUnavailableView {
+                        Label("No Library", systemImage: "music.note.house")
+                    } description: {
+                        Text("Open a Rekordbox library folder to browse your collection.")
+                    } actions: {
+                        Button("Open Library…") { Task { await model.showOpenPanel() } }
+                            .buttonStyle(.borderedProminent)
+                    }
                 }
             }
+            PlayerBar()
         }
-        .safeAreaInset(edge: .bottom, spacing: 0) { PlayerBar() }
-        .onAppear { model.undoManager = undoManager }
-        .onChange(of: undoManager) { model.undoManager = undoManager }
         .frame(minWidth: 900, minHeight: 500)
         .alert(
             model.alert?.title ?? "",

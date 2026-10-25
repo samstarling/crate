@@ -10,9 +10,12 @@ public struct AppliedChange: Identifiable, Hashable, Sendable {
     public let items: [String]
     /// The library folder the changes were applied to.
     public let libraryLocation: URL
-    public let changes: ChangeSet
+    /// The changes as the user made them, so they can be applied again after being reverted.
+    public let pendingChanges: [PendingChange]
+    /// What applying them changed in the library, so it can be reverted.
+    public var changes: ChangeSet
     /// Audio files moved to the Trash, so reverting can put them back.
-    public let trashedFiles: [TrashedFile]
+    public var trashedFiles: [TrashedFile]
     /// When the changes were reverted, if they have been.
     public var revertedAt: Date?
 
@@ -22,6 +25,7 @@ public struct AppliedChange: Identifiable, Hashable, Sendable {
         summary: String,
         items: [String] = [],
         libraryLocation: URL,
+        pendingChanges: [PendingChange],
         changes: ChangeSet,
         trashedFiles: [TrashedFile] = [],
         date: Date = .now,
@@ -32,6 +36,7 @@ public struct AppliedChange: Identifiable, Hashable, Sendable {
         self.summary = summary
         self.items = items
         self.libraryLocation = libraryLocation
+        self.pendingChanges = pendingChanges
         self.changes = changes
         self.trashedFiles = trashedFiles
     }

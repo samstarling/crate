@@ -80,6 +80,9 @@ final class SQLiteDatabase {
             case .text(let text): sqlite3_bind_text(statement, position, text, -1, SQLITE_TRANSIENT)
             case .int(let int): sqlite3_bind_int64(statement, position, Int64(int))
             case .real(let real): sqlite3_bind_double(statement, position, real)
+            case .blob(let data) where data.isEmpty:
+                // An empty Data has no bytes to point at, and binding a nil pointer would store NULL.
+                sqlite3_bind_zeroblob(statement, position, 0)
             case .blob(let data): data.withUnsafeBytes { sqlite3_bind_blob(statement, position, $0.baseAddress, Int32(data.count), SQLITE_TRANSIENT) }
             case .null: sqlite3_bind_null(statement, position)
             }
@@ -124,7 +127,12 @@ final class SQLiteDatabase {
             case SQLITE_FLOAT: .real(sqlite3_column_double(statement, column))
             case SQLITE_TEXT: .text(string(column) ?? "")
             case SQLITE_BLOB:
-                .blob(Data(bytes: sqlite3_column_blob(statement, column), count: Int(sqlite3_column_bytes(statement, column))))
+                // SQLite returns a nil pointer for an empty blob.
+                if let bytes = sqlite3_column_blob(statement, column) {
+                    .blob(Data(bytes: bytes, count: Int(sqlite3_column_bytes(statement, column))))
+                } else {
+                    .blob(Data())
+                }
             default: .null
             }
         }

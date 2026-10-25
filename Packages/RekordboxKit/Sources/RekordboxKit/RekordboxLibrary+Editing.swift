@@ -161,9 +161,11 @@ extension RekordboxLibrary {
     ///
     /// Unlike other edits, this doesn't need the whole library to be unchanged since (Rekordbox
     /// changes it all the time, for example when you play a track). Instead, it checks that every
-    /// row the change touched is still exactly as the change left it, and that no list it renumbered
-    /// has changed, and throws `CannotRevert` if not. Restored rows get fresh update numbers, so
-    /// Rekordbox sees them as local edits.
+    /// row the change touched still holds what the change left in it, and that every list it
+    /// renumbered still has the same tracks in the same places, and throws `CannotRevert` if not.
+    /// Update numbers and timestamps aren't compared, since reverting a later change refreshes them
+    /// without changing anything else. Restored rows get fresh update numbers, so Rekordbox sees
+    /// them as local edits.
     /// - Returns: The library's new update count.
     @discardableResult
     public static func revert(_ changes: ChangeSet, in folder: URL) throws -> Int {
@@ -171,20 +173,14 @@ extension RekordboxLibrary {
             for row in changes.rows {
                 var current: [String: SQLiteDatabase.Value]?
                 try editor.query("SELECT * FROM \(row.table) WHERE ID = ?", [.text(row.id)]) { current = $0.values() }
-                if current != row.after {
+                if current?.withoutBookkeeping != row.after?.withoutBookkeeping {
                     throw CannotRevert(reason: row.after == nil
                         ? "\(description(of: row.table).capitalizedFirst) this change removed has been added back since, so it can\u{2019}t be reverted."
                         : "\(description(of: row.table).capitalizedFirst) this change affected has been changed since, so reverting would overwrite that.")
                 }
             }
-            for list in changes.lists {
-                let sameList = list.column.map { "\($0) = ? AND " } ?? ""
-                let listValue: [SQLiteDatabase.Value] = list.value.map { [.text($0)] } ?? []
-                var changedSince = 0
-                try editor.query(
-                    "SELECT count(*) FROM \(list.table) WHERE \(sameList)rb_local_usn > ?", listValue + [.int(changes.updateCount)]
-                ) { changedSince = $0.int(0) }
-                if changedSince > 0 {
+            for (list, entries) in changes.lists {
+                if try editor.entries(in: list) != entries {
                     throw CannotRevert(reason: "\(description(of: list.table).capitalizedFirst) this change affected has been changed since, so reverting would overwrite that.")
                 }
             }
@@ -251,11 +247,12 @@ extension RekordboxLibrary {
 
             let editor = Editor(database: database, updateCount: updateCount, now: timestampFormatter.string(from: .now))
             try body(editor)
+            let changes = try editor.finish()
             try database.execute(
                 "UPDATE agentRegistry SET int_1 = ?, updated_at = ? WHERE registry_id = 'localUpdateCount'",
                 [.int(editor.updateCount), .text(editor.now)]
             )
-            return editor.changes
+            return changes
         }
     }
 
@@ -297,7 +294,8 @@ public struct ChangeSet: Hashable, Sendable {
     }
 
     var rows: [RowChange]
-    var lists: [ListReference]
+    /// Each list the edit renumbered, and its entries (ID, track and position) afterwards.
+    var lists: [ListReference: Set<[SQLiteDatabase.Value]>]
     /// The library's update count after the edit.
     public let updateCount: Int
 
@@ -305,7 +303,7 @@ public struct ChangeSet: Hashable, Sendable {
     public var rowCount: Int { rows.count }
 
     /// A change set with no changes, for example for previews.
-    public static let none = ChangeSet(rows: [], lists: [], updateCount: 0)
+    public static let none = ChangeSet(rows: [], lists: [:], updateCount: 0)
 }
 
 /// Runs an edit's statements, recording every row they change so the edit can be reverted.
@@ -328,8 +326,23 @@ final class Editor {
         self.now = now
     }
 
-    var changes: ChangeSet {
-        ChangeSet(rows: rows, lists: lists, updateCount: updateCount)
+    /// What the edit changed, including the contents of every list it renumbered as they are now.
+    func finish() throws -> ChangeSet {
+        var listEntries: [ChangeSet.ListReference: Set<[SQLiteDatabase.Value]>] = [:]
+        for list in lists {
+            listEntries[list] = try entries(in: list)
+        }
+        return ChangeSet(rows: rows, lists: listEntries, updateCount: updateCount)
+    }
+
+    /// A list's entries: each row's ID, track and position.
+    func entries(in list: ChangeSet.ListReference) throws -> Set<[SQLiteDatabase.Value]> {
+        let sameList = list.column.map { "WHERE \($0) = ?" } ?? ""
+        var entries = Set<[SQLiteDatabase.Value]>()
+        try database.query("SELECT ID, ContentID, TrackNo FROM \(list.table) \(sameList)", list.value.map { [.text($0)] } ?? []) { row in
+            entries.insert([row.value(0), row.value(1), row.value(2)])
+        }
+        return entries
     }
 
     func query(_ sql: String, _ values: [SQLiteDatabase.Value] = [], row: (SQLiteDatabase.Row) throws -> Void) throws {
@@ -417,6 +430,17 @@ final class Editor {
 
     private func key(_ table: String, _ id: String) -> String {
         "\(table)\u{0}\(id)"
+    }
+}
+
+extension [String: SQLiteDatabase.Value] {
+    /// The row without the columns every edit refreshes (`rb_local_usn`, `updated_at`), so rows can
+    /// be compared for what they hold.
+    var withoutBookkeeping: Self {
+        var row = self
+        row["rb_local_usn"] = nil
+        row["updated_at"] = nil
+        return row
     }
 }
 
