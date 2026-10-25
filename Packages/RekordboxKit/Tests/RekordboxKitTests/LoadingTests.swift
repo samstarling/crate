@@ -16,6 +16,7 @@ struct LoadingTests {
         let track = try #require(library.tracksByID[LibraryFixture.nightDrive])
         #expect(track.title == "Night Drive")
         #expect(track.artist == "Halcyon Static")
+        #expect(track.album == "Afterhours")
         #expect(track.genre == "House")
         #expect(track.key == "Am")
         #expect(track.bpm == 122)

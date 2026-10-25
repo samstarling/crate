@@ -102,6 +102,10 @@ final class SQLiteDatabase {
             sqlite3_column_text(statement, column).map { String(cString: $0) }
         }
 
+        func isNull(_ column: Int32) -> Bool {
+            sqlite3_column_type(statement, column) == SQLITE_NULL
+        }
+
         func int(_ column: Int32) -> Int {
             Int(sqlite3_column_int64(statement, column))
         }

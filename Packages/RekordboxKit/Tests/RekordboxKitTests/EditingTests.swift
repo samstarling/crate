@@ -148,16 +148,68 @@ struct EditingTests {
         #expect(try fixture.entries("djmdSongPlaylist", list: "PlaylistID", id: "p3") == [])
         // Night Drive was in this history twice, either side of Soft Machines.
         #expect(try fixture.entries("djmdSongHistory", list: "HistoryID", id: "saturday") == ["1:\(LibraryFixture.softMachines)"])
-        #expect(try fixture.entries("djmdSongMyTag", list: "MyTagID", id: LibraryFixture.regridTag) == ["1:\(LibraryFixture.softMachines)"])
+        // My Tag entries aren't numbered, so there's nothing to renumber; the other entry is untouched.
+        #expect(try fixture.count("SELECT count(*) FROM djmdSongMyTag WHERE ContentID = '\(LibraryFixture.softMachines)' AND TrackNo IS NULL AND rb_local_usn IS NULL") == 1)
     }
 
     @Test func renumberedRowsGetFreshUpdateNumbers() throws {
         try RekordboxLibrary.removeTracks(withIDs: [LibraryFixture.nightDrive], in: fixture.folder, expectedUpdateCount: LibraryFixture.initialUpdateCount)
-        // Gaps closed: Warm-up (1), Peak (1, nothing after it), history (2), My Tag (1).
-        #expect(try updateCount == LibraryFixture.initialUpdateCount + 5)
+        // Gaps closed: Warm-up (1), Peak (1, nothing after it), history (2). My Tags aren't numbered.
+        #expect(try updateCount == LibraryFixture.initialUpdateCount + 4)
         #expect(try fixture.count("SELECT rb_local_usn FROM djmdSongPlaylist WHERE ID = 'sp2'") > LibraryFixture.initialUpdateCount)
         // Rows before the removed track weren't touched.
         #expect(try fixture.count("SELECT count(*) FROM djmdSongPlaylist WHERE ID = 'sp0' AND rb_local_usn IS NULL") == 1)
+    }
+
+    private func exists(_ table: String, _ id: String) throws -> Bool {
+        try fixture.count("SELECT count(*) FROM \(table) WHERE ID = '\(id)'") == 1
+    }
+
+    @Test func removingATrackDeletesArtistsAlbumsAndGenresOnlyItUsed() throws {
+        try RekordboxLibrary.removeTracks(withIDs: [LibraryFixture.copperSun], in: fixture.folder, expectedUpdateCount: LibraryFixture.initialUpdateCount)
+        #expect(try !exists("djmdArtist", "2"), "the track's artist")
+        #expect(try !exists("djmdArtist", "4"), "the track's remixer")
+        #expect(try !exists("djmdAlbum", "2"), "the track's album")
+        #expect(try !exists("djmdArtist", "3"), "the album's artist, only used by that album")
+        // Night Drive and Soft Machines still use these.
+        #expect(try exists("djmdArtist", "1"))
+        #expect(try exists("djmdAlbum", "1"))
+        #expect(try exists("djmdGenre", "1"))
+    }
+
+    @Test func sharedArtistsAlbumsAndGenresAreKept() throws {
+        try RekordboxLibrary.removeTracks(withIDs: [LibraryFixture.nightDrive], in: fixture.folder, expectedUpdateCount: LibraryFixture.initialUpdateCount)
+        // Soft Machines has the same artist, album and genre.
+        #expect(try exists("djmdArtist", "1"))
+        #expect(try exists("djmdAlbum", "1"))
+        #expect(try exists("djmdGenre", "1"))
+    }
+
+    @Test func removingEveryTrackThatUsesThemDeletesThem() throws {
+        try RekordboxLibrary.removeTracks(
+            withIDs: [LibraryFixture.nightDrive, LibraryFixture.softMachines], in: fixture.folder, expectedUpdateCount: LibraryFixture.initialUpdateCount
+        )
+        #expect(try !exists("djmdArtist", "1"))
+        #expect(try !exists("djmdAlbum", "1"))
+        #expect(try !exists("djmdGenre", "1"))
+    }
+
+    @Test func otherUnusedRowsAreLeftAlone() throws {
+        try RekordboxLibrary.removeTracks(
+            withIDs: [LibraryFixture.nightDrive, LibraryFixture.copperSun, LibraryFixture.softMachines],
+            in: fixture.folder, expectedUpdateCount: LibraryFixture.initialUpdateCount
+        )
+        #expect(try exists("djmdArtist", "99"))
+        #expect(try exists("djmdAlbum", "99"))
+        #expect(try exists("djmdGenre", "99"))
+    }
+
+    @Test func artistsUsedOnlyAsAnAlbumArtistAreKept() throws {
+        // Various Artists is only an album artist; give its album to Soft Machines so it stays in use.
+        try fixture.database.execute("UPDATE djmdContent SET AlbumID = '2' WHERE ID = '\(LibraryFixture.softMachines)'")
+        try RekordboxLibrary.removeTracks(withIDs: [LibraryFixture.copperSun], in: fixture.folder, expectedUpdateCount: LibraryFixture.initialUpdateCount)
+        #expect(try exists("djmdAlbum", "2"))
+        #expect(try exists("djmdArtist", "3"))
     }
 
     @Test func removingSeveralTracks() throws {

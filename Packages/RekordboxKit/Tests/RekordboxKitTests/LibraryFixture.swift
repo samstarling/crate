@@ -5,9 +5,12 @@ import Foundation
 /// definitions (`Fixtures/schema.sql`).
 ///
 /// Contents:
-/// - Tracks: "Night Drive" (Halcyon Static, House, Am, 122 BPM, 4 stars, Wonky, 2 memory cues and a
-///   hot cue, My Tag "Regrid"), "Copper Sun" (Mara Vey, no genre, C, unrated, never played) and
-///   "Soft Machines " (trailing space; Halcyon Static, House, unanalysed, My Tag "Regrid").
+/// - Tracks: "Night Drive" (Halcyon Static, album "Afterhours", House, Am, 122 BPM, 4 stars, Wonky,
+///   2 memory cues and a hot cue, My Tag "Regrid"), "Copper Sun" (Mara Vey, remixed by Lowfield,
+///   album "Copper Sun EP" by Various Artists, no genre, C, unrated, never played) and
+///   "Soft Machines " (trailing space; Halcyon Static, album "Afterhours", House, unanalysed,
+///   My Tag "Regrid").
+/// - Unused rows no track refers to: artist "Nobody", album "Lost Album", genre "Unused".
 /// - Playlists: folder "Sets" containing "Warm-up" (Copper Sun, Night Drive, Soft Machines);
 ///   "Peak" (Night Drive); smart playlist "Unrated" (rating is 0).
 /// - History "Saturday": Night Drive, Soft Machines, Night Drive.
@@ -78,15 +81,22 @@ final class LibraryFixture {
         }
         try insert("djmdArtist", ["ID": .text("1"), "Name": .text("Halcyon Static")])
         try insert("djmdArtist", ["ID": .text("2"), "Name": .text("Mara Vey")])
+        try insert("djmdArtist", ["ID": .text("3"), "Name": .text("Various Artists")])
+        try insert("djmdArtist", ["ID": .text("4"), "Name": .text("Lowfield")])
+        try insert("djmdArtist", ["ID": .text("99"), "Name": .text("Nobody")])
+        try insert("djmdAlbum", ["ID": .text("1"), "Name": .text("Afterhours"), "AlbumArtistID": .text("1")])
+        try insert("djmdAlbum", ["ID": .text("2"), "Name": .text("Copper Sun EP"), "AlbumArtistID": .text("3")])
+        try insert("djmdAlbum", ["ID": .text("99"), "Name": .text("Lost Album"), "AlbumArtistID": .text("99")])
         try insert("djmdGenre", ["ID": .text("1"), "Name": .text("House")])
+        try insert("djmdGenre", ["ID": .text("99"), "Name": .text("Unused")])
         try insert("djmdKey", ["ID": .text("1"), "ScaleName": .text("Am")])
         try insert("djmdKey", ["ID": .text("2"), "ScaleName": .text("C")])
 
-        try insertTrack(Self.nightDrive, title: "Night Drive", artist: "1", genre: "1", key: "1", bpm: 12200,
+        try insertTrack(Self.nightDrive, title: "Night Drive", artist: "1", album: "1", genre: "1", key: "1", bpm: 12200,
                         rating: 4, stockDate: "2026-10-20", plays: 5, color: "8")
-        try insertTrack(Self.copperSun, title: "Copper Sun", artist: "2", genre: nil, key: "2", bpm: 12000,
-                        rating: 0, stockDate: "2025-01-01", plays: 0, color: "0")
-        try insertTrack(Self.softMachines, title: "Soft Machines ", artist: "1", genre: "1", key: nil, bpm: 0,
+        try insertTrack(Self.copperSun, title: "Copper Sun", artist: "2", album: "2", genre: nil, key: "2", bpm: 12000,
+                        rating: 0, stockDate: "2025-01-01", plays: 0, color: "0", remixer: "4")
+        try insertTrack(Self.softMachines, title: "Soft Machines ", artist: "1", album: "1", genre: "1", key: nil, bpm: 0,
                         rating: 2, stockDate: "2026-10-01", plays: 2, color: "0")
 
         // Cues: Kind 0 is a memory cue, 1–8 are hot cues.
@@ -96,8 +106,9 @@ final class LibraryFixture {
 
         try insert("djmdMyTag", ["ID": .text("1"), "Name": .text("Custom"), "Attribute": .int(1), "ParentID": .text("root"), "Seq": .int(1)])
         try insert("djmdMyTag", ["ID": .text(Self.regridTag), "Name": .text("Regrid"), "Attribute": .int(0), "ParentID": .text("1"), "Seq": .int(1)])
-        try insert("djmdSongMyTag", ["ID": .text("mt1"), "MyTagID": .text(Self.regridTag), "ContentID": .text(Self.nightDrive), "TrackNo": .int(1)])
-        try insert("djmdSongMyTag", ["ID": .text("mt2"), "MyTagID": .text(Self.regridTag), "ContentID": .text(Self.softMachines), "TrackNo": .int(2)])
+        // My Tag entries aren't numbered: TrackNo is NULL in real libraries.
+        try insert("djmdSongMyTag", ["ID": .text("mt1"), "MyTagID": .text(Self.regridTag), "ContentID": .text(Self.nightDrive)])
+        try insert("djmdSongMyTag", ["ID": .text("mt2"), "MyTagID": .text(Self.regridTag), "ContentID": .text(Self.softMachines)])
 
         try insert("djmdPlaylist", ["ID": .text("p1"), "Name": .text("Sets"), "Attribute": .int(1), "ParentID": .text("root"), "Seq": .int(1)])
         try insert("djmdPlaylist", ["ID": .text("p2"), "Name": .text("Warm-up"), "Attribute": .int(0), "ParentID": .text("p1"), "Seq": .int(1)])
@@ -120,17 +131,19 @@ final class LibraryFixture {
     }
 
     private func insertTrack(
-        _ id: String, title: String, artist: String, genre: String?, key: String?, bpm: Int,
-        rating: Int, stockDate: String, plays: Int, color: String
+        _ id: String, title: String, artist: String, album: String, genre: String?, key: String?, bpm: Int,
+        rating: Int, stockDate: String, plays: Int, color: String, remixer: String? = nil
     ) throws {
         var values: [String: SQLiteDatabase.Value] = [
-            "ID": .text(id), "Title": .text(title), "ArtistID": .text(artist), "BPM": .int(bpm), "Length": .int(300),
+            "ID": .text(id), "Title": .text(title), "ArtistID": .text(artist), "AlbumID": .text(album),
+            "BPM": .int(bpm), "Length": .int(300),
             "Rating": .int(rating), "StockDate": .text(stockDate), "DateCreated": .text(stockDate),
             "DJPlayCount": .int(plays), "ColorID": .text(color), "FolderPath": .text("/Music/\(title).mp3"),
             "AnalysisDataPath": .text("/PIONEER/USBANLZ/\(id)/ANLZ0000.DAT"), "rb_local_usn": .int(1),
         ]
         if let genre { values["GenreID"] = .text(genre) }
         if let key { values["KeyID"] = .text(key) }
+        if let remixer { values["RemixerID"] = .text(remixer) }
         try insert("djmdContent", values)
     }
 }

@@ -318,21 +318,39 @@ public struct RekordboxLibrary: Sendable {
         ("djmdRecommendLike", "ContentID2"),
     ]
 
+    /// Columns of `djmdContent` that refer to an artist. Albums refer to one too, as their album
+    /// artist. (Lyricist doesn't seem to hold artist IDs, but counting it can only keep an artist.)
+    private static let trackArtistColumns = ["ArtistID", "RemixerID", "OrgArtistID", "ComposerID", "Lyricist"]
+
     /// Removes tracks from the collection in `master.db` in `folder`, along with every row that
     /// refers to them: playlist and history entries, cues, My Tags and so on.
     ///
     /// This mirrors what Rekordbox does: rows are deleted rather than marked deleted, and later
-    /// tracks in each list are renumbered. The audio files and Rekordbox's analysis files are left
-    /// on disk.
+    /// tracks in each numbered list are renumbered. Artists, albums and genres that only the removed
+    /// tracks used are deleted too. The audio files and Rekordbox's analysis files are left on disk.
     /// - Returns: The library's new update count.
     /// - Throws: `LibraryChanged` if the library's update count isn't `expectedUpdateCount`.
     @discardableResult
     public static func removeTracks(withIDs ids: [Track.ID], in folder: URL, expectedUpdateCount: Int?) throws -> Int {
         try edit(in: folder, expectedUpdateCount: expectedUpdateCount) { database, nextUpdateCount, now in
+            var artists = Set<String>(), albums = Set<String>(), genres = Set<String>()
             for id in ids {
+                try database.query(
+                    "SELECT \(trackArtistColumns.joined(separator: ", ")), AlbumID, GenreID FROM djmdContent WHERE ID = ?", [.text(id)]
+                ) { row in
+                    for column in trackArtistColumns.indices {
+                        if let artist = row.string(Int32(column)), !artist.isEmpty { artists.insert(artist) }
+                    }
+                    if let album = row.string(Int32(trackArtistColumns.count)), !album.isEmpty { albums.insert(album) }
+                    if let genre = row.string(Int32(trackArtistColumns.count + 1)), !genre.isEmpty { genres.insert(genre) }
+                }
+
                 for (table, list) in orderedTrackTables {
+                    // Some lists (My Tags, for one) aren't numbered: TrackNo is NULL, so there's no gap to close.
                     var positions: [(list: String, trackNo: Int)] = []
-                    try database.query("SELECT \(list ?? "''"), TrackNo FROM \(table) WHERE ContentID = ?", [.text(id)]) { row in
+                    try database.query(
+                        "SELECT \(list ?? "''"), TrackNo FROM \(table) WHERE ContentID = ? AND TrackNo IS NOT NULL", [.text(id)]
+                    ) { row in
                         positions.append((row.string(0) ?? "", row.int(1)))
                     }
                     try database.execute("DELETE FROM \(table) WHERE ContentID = ?", [.text(id)])
@@ -351,6 +369,43 @@ public struct RekordboxLibrary: Sendable {
                     try database.execute("DELETE FROM \(table) WHERE \(column) = ?", [.text(id)])
                 }
                 try database.execute("DELETE FROM djmdContent WHERE ID = ?", [.text(id)])
+            }
+            try deleteUnused(albums: albums, artists: artists, genres: genres, in: database)
+        }
+    }
+
+    /// Deletes those of the given albums, artists and genres that no track refers to any more, the
+    /// way Rekordbox tidies up after removing tracks. Albums go first, so an album artist only used
+    /// by a deleted album goes too. Unused rows the removed tracks didn't refer to are left alone.
+    private static func deleteUnused(albums: Set<String>, artists: Set<String>, genres: Set<String>, in database: SQLiteDatabase) throws {
+        var artists = artists
+        for album in albums {
+            var stillUsed = false
+            try database.query("SELECT 1 FROM djmdContent WHERE AlbumID = ? LIMIT 1", [.text(album)]) { _ in stillUsed = true }
+            guard !stillUsed else { continue }
+            try database.query("SELECT AlbumArtistID FROM djmdAlbum WHERE ID = ?", [.text(album)]) { row in
+                if let artist = row.string(0), !artist.isEmpty { artists.insert(artist) }
+            }
+            try database.execute("DELETE FROM djmdAlbum WHERE ID = ?", [.text(album)])
+        }
+
+        let artistReferences = trackArtistColumns.map { "SELECT 1 FROM djmdContent WHERE \($0) = ?1" }
+            + ["SELECT 1 FROM djmdAlbum WHERE AlbumArtistID = ?1"]
+        for artist in artists {
+            var stillUsed = false
+            try database.query("SELECT EXISTS (\(artistReferences.joined(separator: " UNION ALL ")))", [.text(artist)]) { row in
+                stillUsed = row.int(0) == 1
+            }
+            if !stillUsed {
+                try database.execute("DELETE FROM djmdArtist WHERE ID = ?", [.text(artist)])
+            }
+        }
+
+        for genre in genres {
+            var stillUsed = false
+            try database.query("SELECT 1 FROM djmdContent WHERE GenreID = ? LIMIT 1", [.text(genre)]) { _ in stillUsed = true }
+            if !stillUsed {
+                try database.execute("DELETE FROM djmdGenre WHERE ID = ?", [.text(genre)])
             }
         }
     }
