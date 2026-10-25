@@ -11,6 +11,8 @@ struct TrackTableView: NSViewRepresentable {
     let colors: [TrackColor]
     @Binding var sortOrder: [KeyPathComparator<Track>]
     @Binding var selection: Set<Track.ID>
+    let onPlay: (Track) -> Void
+    let onTogglePlayback: () -> Void
     let onSetColor: ([Track.ID], TrackColor?) -> Void
 
     func makeCoordinator() -> Coordinator {
@@ -18,7 +20,7 @@ struct TrackTableView: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> NSScrollView {
-        let tableView = NSTableView()
+        let tableView = TrackNSTableView()
         tableView.style = .inset
         tableView.usesAlternatingRowBackgroundColors = true
         tableView.allowsMultipleSelection = true
@@ -49,7 +51,9 @@ struct TrackTableView: NSViewRepresentable {
         menu.delegate = context.coordinator
         tableView.menu = menu
         tableView.target = context.coordinator
-        tableView.doubleAction = #selector(Coordinator.revealClickedTracks)
+        tableView.doubleAction = #selector(Coordinator.playClickedTrack)
+        tableView.onTogglePlayback = { [weak coordinator = context.coordinator] in coordinator?.togglePlayback() }
+        tableView.onPlaySelection = { [weak coordinator = context.coordinator] in coordinator?.playSelectedTrack() }
 
         tableView.dataSource = context.coordinator
         tableView.delegate = context.coordinator
@@ -151,6 +155,10 @@ struct TrackTableView: NSViewRepresentable {
             let rows = clickedRows
             guard !rows.isEmpty else { return }
 
+            if rows.count == 1 {
+                menu.addItem(item("Play", action: #selector(playClickedTrack)))
+            }
+
             let colorMenu = NSMenu()
             let current = Set(rows.map { tracks[$0].color?.id ?? 0 })
             for color in [nil] + parent.colors.map(Optional.some) {
@@ -177,6 +185,22 @@ struct TrackTableView: NSViewRepresentable {
         @objc private func setColorFromMenu(_ sender: NSMenuItem) {
             let ids = clickedRows.map { tracks[$0].id }
             parent.onSetColor(ids, parent.colors.first { $0.id == sender.tag })
+        }
+
+        // MARK: Playback
+
+        @objc func playClickedTrack() {
+            guard let tableView, tableView.clickedRow >= 0 else { return }
+            parent.onPlay(tracks[tableView.clickedRow])
+        }
+
+        func playSelectedTrack() {
+            guard let row = tableView?.selectedRowIndexes.first else { return }
+            parent.onPlay(tracks[row])
+        }
+
+        func togglePlayback() {
+            parent.onTogglePlayback()
         }
 
         /// The rows a right-click or double-click applies to: the whole selection if the clicked row is part of it.
@@ -305,6 +329,20 @@ private final class TextCellView: NSTableCellView {
     override func prepareForReuse() {
         super.prepareForReuse()
         field.textColor = .labelColor
+    }
+}
+
+/// Handles Space (play/pause) and Return (play the selection).
+private final class TrackNSTableView: NSTableView {
+    var onTogglePlayback: () -> Void = {}
+    var onPlaySelection: () -> Void = {}
+
+    override func keyDown(with event: NSEvent) {
+        switch event.charactersIgnoringModifiers {
+        case " ": onTogglePlayback()
+        case "\r": onPlaySelection()
+        default: super.keyDown(with: event)
+        }
     }
 }
 

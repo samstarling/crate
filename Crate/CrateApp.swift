@@ -10,11 +10,13 @@ import SwiftUI
 @main
 struct CrateApp: App {
     @State private var model = LibraryModel()
+    @State private var player = PlayerModel()
 
     var body: some Scene {
         Window("Crate", id: "main") {
             ContentView()
                 .environment(model)
+                .environment(player)
         }
         .commands {
             CommandGroup(replacing: .newItem) {
@@ -23,6 +25,11 @@ struct CrateApp: App {
                 Button("Reload Library") { Task { await model.reload() } }
                     .keyboardShortcut("r")
                     .disabled(model.library == nil || model.isLoading)
+            }
+            CommandMenu("Controls") {
+                Button(player.isPlaying ? "Pause" : "Play") { player.togglePlayPause() }
+                    .keyboardShortcut("p", modifiers: [.command, .option])
+                    .disabled(player.track == nil)
             }
         }
     }

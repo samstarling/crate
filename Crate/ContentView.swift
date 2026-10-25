@@ -14,11 +14,10 @@ enum SidebarItem: Hashable {
 
 struct ContentView: View {
     @Environment(LibraryModel.self) private var model
+    @Environment(PlayerModel.self) private var player
     @State private var selection: SidebarItem? = .collection
 
     var body: some View {
-        @Bindable var model = model
-
         Group {
             if let library = model.library {
                 NavigationSplitView {
@@ -40,6 +39,7 @@ struct ContentView: View {
                 }
             }
         }
+        .safeAreaInset(edge: .bottom, spacing: 0) { PlayerBar() }
         .frame(minWidth: 900, minHeight: 500)
         .task { await model.openInitialLibrary() }
         .alert(
@@ -49,6 +49,14 @@ struct ContentView: View {
             Button("OK") {}
         } message: {
             Text(model.errorMessage ?? "")
+        }
+        .alert(
+            "Couldn't play track",
+            isPresented: Binding(get: { player.errorMessage != nil }, set: { if !$0 { player.errorMessage = nil } })
+        ) {
+            Button("OK") {}
+        } message: {
+            Text(player.errorMessage ?? "")
         }
     }
 

@@ -6,6 +6,7 @@ struct TrackTable: View {
     let library: RekordboxLibrary
 
     @Environment(LibraryModel.self) private var model
+    @Environment(PlayerModel.self) private var player
 
     /// Filtered and sorted rows, cached so redraws don't redo the work.
     @State private var visibleTracks: [Track] = []
@@ -35,6 +36,8 @@ struct TrackTable: View {
             colors: library.colors,
             sortOrder: $sortOrder,
             selection: $selection,
+            onPlay: { player.play($0) },
+            onTogglePlayback: { player.togglePlayPause() },
             onSetColor: { ids, color in Task { await model.setColor(color, forTrackIDs: ids) } }
         )
             .searchable(text: $searchText, placement: .toolbar, prompt: "Title, artist, album…")
