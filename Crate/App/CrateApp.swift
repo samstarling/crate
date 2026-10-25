@@ -36,7 +36,7 @@ struct CrateApp: App {
                     .keyboardShortcut("o")
                 Button("Reload Library") { Task { await model.reload() } }
                     .keyboardShortcut("r")
-                    .disabled(model.library == nil || model.isLoading)
+                    .disabled(model.library == nil || model.isLoading || model.isWriting)
             }
             CommandGroup(replacing: .saveItem) {
                 Button("Apply Changes to Rekordbox") { Task { await model.applyPendingChanges() } }

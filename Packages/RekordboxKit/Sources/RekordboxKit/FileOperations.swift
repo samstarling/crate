@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import Synchronization
 
 /// What a `LibrarySession` does to files besides `master.db`: backing the library up before
 /// changing it, and moving audio files to the Trash and back.
@@ -28,9 +29,22 @@ public struct FileOperations: Sendable {
     public static let defaultBackupsDirectory = URL.applicationSupportDirectory.appending(path: "Crate/Backups", directoryHint: .isDirectory)
 
     /// Backs up into `backupsDirectory` and uses the user's Trash.
+    ///
+    /// Each library is backed up once, however many times it's opened: every session using these
+    /// operations shares the record of what's been backed up.
     public static func live(backupsDirectory: URL = defaultBackupsDirectory, backupsToKeep: Int = 10) -> FileOperations {
-        FileOperations(
-            backUp: { try backUp($0, into: backupsDirectory, keeping: backupsToKeep) },
+        let backedUp = Mutex(Set<String>())
+        return FileOperations(
+            backUp: { library in
+                let path = library.standardizedFileURL.path
+                guard backedUp.withLock({ $0.insert(path).inserted }) else { return }
+                do {
+                    try backUp(library, into: backupsDirectory, keeping: backupsToKeep)
+                } catch {
+                    backedUp.withLock { _ = $0.remove(path) }
+                    throw error
+                }
+            },
             moveToTrash: { files in
                 moveFiles(files) { file in
                     var inTrash: NSURL?

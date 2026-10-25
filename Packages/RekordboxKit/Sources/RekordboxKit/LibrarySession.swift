@@ -26,6 +26,10 @@ public final class LibrarySession {
     /// Steps redo goes forward through, newest last.
     private(set) var redoSteps: [ChangeStep] = []
     private var operationsInProgress = 0
+    /// The pending changes being applied right now, which can't be discarded.
+    private var changesBeingWritten = Set<StagedChange.ID>()
+    /// Callers waiting for writes to finish.
+    @ObservationIgnored private var writeWaiters: [CheckedContinuation<Void, Never>] = []
 
     @ObservationIgnored private let files: FileOperations
     @ObservationIgnored private var isBackedUp = false
@@ -49,27 +53,27 @@ public final class LibrarySession {
     public var location: URL { savedLibrary.location }
 
     /// Loads the library again, keeping pending changes and the undo history, checked against it:
-    /// tracks that are no longer in the library are dropped from them.
+    /// tracks that are no longer in the library are dropped from them. Does nothing while writing,
+    /// which reloads when it's done.
     public func reload() async throws {
+        guard !isWriting else { return }
+        try await load()
+    }
+
+    private func load() async throws {
         let location = location
         let saved = try await Task.detached(priority: .userInitiated) { try RekordboxLibrary.load(from: location) }.value
         pendingChanges = pendingChanges.compactMap { $0.revalidated(against: saved) }
         undoSteps = undoSteps.compactMap { $0.revalidated(against: saved) }
         redoSteps = redoSteps.compactMap { $0.revalidated(against: saved) }
-        // Undoing a stage step removes its change from the pending list, so it has to be there.
-        let pendingIDs = Set(pendingChanges.map(\.id))
-        undoSteps.removeAll { step in
-            if case .stage(let change, _) = step { !pendingIDs.contains(change.id) } else { false }
-        }
         savedLibrary = saved
         library = saved.applying(pendingChanges.map(\.change))
     }
 
     /// Returns once no write is in progress.
     public func waitForWrites() async {
-        while isWriting {
-            try? await Task.sleep(for: .milliseconds(20))
-        }
+        guard isWriting else { return }
+        await withCheckedContinuation { writeWaiters.append($0) }
     }
 
     // MARK: Pending changes
@@ -92,17 +96,21 @@ public final class LibrarySession {
         record(.stage(staged, actionName: actionName))
     }
 
-    /// Discards pending changes, so they won't be applied. Not while applying: the changes being
-    /// written can't be taken back.
+    /// Discards pending changes, so they won't be applied. Changes that are being applied right now
+    /// can't be taken back, so they're left alone.
     public func discard(_ changes: [StagedChange]) {
-        guard !isWriting else { return }
-        let discarded = remove(changes)
+        let discarded = remove(changes.filter { !isBeingWritten($0) })
         guard !discarded.isEmpty else { return }
         record(.discard(discarded))
     }
 
     public func discardAllPendingChanges() {
         discard(pendingChanges)
+    }
+
+    /// Whether a pending change is being applied right now.
+    public func isBeingWritten(_ change: StagedChange) -> Bool {
+        changesBeingWritten.contains(change.id)
     }
 
     /// Adds changes to the pending list, at the given positions or the end.
@@ -132,11 +140,16 @@ public final class LibrarySession {
 
     // MARK: Applying and reverting
 
-    /// Audio files that couldn't be moved to the Trash or back. The library itself was still changed.
-    public struct FileReport: Sendable {
+    /// What went wrong after a write that succeeded: the library was still changed.
+    public struct WriteReport: Sendable {
+        /// Audio files that couldn't be moved to the Trash.
         public var notMovedToTrash: [String] = []
+        /// Audio files that couldn't be moved back from the Trash.
         public var notRestored: [String] = []
-        public var isEmpty: Bool { notMovedToTrash.isEmpty && notRestored.isEmpty }
+        /// Why the library couldn't be loaded again afterwards, if it couldn't: what's shown may be
+        /// out of date until it's reloaded.
+        public var notReloaded: String?
+        public var isEmpty: Bool { notMovedToTrash.isEmpty && notRestored.isEmpty && notReloaded == nil }
     }
 
     /// Writes every pending change to `master.db`, in one transaction, then reloads.
@@ -144,18 +157,25 @@ public final class LibrarySession {
     /// If the library has changed since it was loaded (in Rekordbox, say), nothing is written: the
     /// session reloads, keeps the pending changes, and throws `RekordboxLibrary.LibraryChanged`.
     @discardableResult
-    public func applyPendingChanges() async throws -> FileReport {
-        guard !pendingChanges.isEmpty, !isWriting else { return FileReport() }
-        return try await whileWriting { try await apply(pendingChanges) }
+    public func applyPendingChanges() async throws -> WriteReport {
+        guard !pendingChanges.isEmpty, !isWriting else { return WriteReport() }
+        let staged = pendingChanges
+        changesBeingWritten = Set(staged.map(\.id))
+        defer { changesBeingWritten = [] }
+        return try await whileWriting { try await apply(staged) }
     }
 
-    private func apply(_ staged: [StagedChange]) async throws -> FileReport {
+    private func apply(_ staged: [StagedChange]) async throws -> WriteReport {
+        // While writing, steps can only be added to the history (staging, or discarding changes that
+        // aren't being written): undo, redo and reloading all wait. So the steps after this point
+        // are exactly the ones taken while writing.
         let stepsBefore = undoSteps.count
-        let (changeSet, trashed, report): (ChangeSet, [TrashedFile], FileReport)
+        let (changeSet, trashed): (ChangeSet, [TrashedFile])
+        var report: WriteReport
         do {
             (changeSet, trashed, report) = try await write(staged.map(\.change))
         } catch let error as RekordboxLibrary.LibraryChanged {
-            try? await reload()
+            try? await load()
             throw error
         }
         let applied = AppliedChange(
@@ -170,16 +190,16 @@ public final class LibrarySession {
         // Only the changes that were applied: more may have been staged while writing.
         let appliedIDs = Set(staged.map(\.id))
         pendingChanges.removeAll { appliedIDs.contains($0.id) }
-        // Changes staged while writing come after applying, so undo takes them back first.
-        let stagedWhileWriting = Array(undoSteps.dropFirst(stepsBefore))
-        undoSteps.removeLast(stagedWhileWriting.count)
+        // Steps taken while writing come after applying, so undo takes them back first.
+        let takenWhileWriting = Array(undoSteps.dropFirst(min(stepsBefore, undoSteps.count)))
+        undoSteps.removeLast(takenWhileWriting.count)
         // Staging the applied changes is now part of applying them, so undo reverts the whole batch.
         undoSteps.removeAll { step in
             if case .stage(let change, _) = step { appliedIDs.contains(change.id) } else { false }
         }
         record(.apply(applied.id))
-        undoSteps.append(contentsOf: stagedWhileWriting)
-        try await reload()
+        undoSteps.append(contentsOf: takenWhileWriting)
+        await reloadAfterWriting(&report)
         return report
     }
 
@@ -187,28 +207,28 @@ public final class LibrarySession {
     /// moved to the Trash. Throws `RekordboxLibrary.CannotRevert` if something they touched has been
     /// changed again since.
     @discardableResult
-    public func revert(_ id: AppliedChange.ID) async throws -> FileReport {
-        guard !isWriting else { return FileReport() }
+    public func revert(_ id: AppliedChange.ID) async throws -> WriteReport {
+        guard !isWriting else { return WriteReport() }
         let report = try await whileWriting { try await performRevert(id) }
         if report != nil {
             record(.revert(id))
         }
-        return report ?? FileReport()
+        return report ?? WriteReport()
     }
 
     /// Applies reverted changes again, checked against the library as it is now.
     @discardableResult
-    public func applyAgain(_ id: AppliedChange.ID) async throws -> FileReport {
-        guard !isWriting else { return FileReport() }
+    public func applyAgain(_ id: AppliedChange.ID) async throws -> WriteReport {
+        guard !isWriting else { return WriteReport() }
         let report = try await whileWriting { try await performApplyAgain(id) }
         if report != nil {
             record(.apply(id))
         }
-        return report ?? FileReport()
+        return report ?? WriteReport()
     }
 
     /// Returns `nil` if the changes were already reverted.
-    private func performRevert(_ id: AppliedChange.ID) async throws -> FileReport? {
+    private func performRevert(_ id: AppliedChange.ID) async throws -> WriteReport? {
         guard let index = appliedChanges.firstIndex(where: { $0.id == id }), !appliedChanges[index].isReverted else { return nil }
         let applied = appliedChanges[index]
         let location = location
@@ -218,23 +238,35 @@ public final class LibrarySession {
         if let index = appliedChanges.firstIndex(where: { $0.id == id }) {
             appliedChanges[index].revertedAt = .now
         }
-        try await reload()
-        return FileReport(notRestored: failures)
+        var report = WriteReport(notRestored: failures)
+        await reloadAfterWriting(&report)
+        return report
     }
 
     /// Returns `nil` if the changes weren't reverted.
-    private func performApplyAgain(_ id: AppliedChange.ID) async throws -> FileReport? {
+    private func performApplyAgain(_ id: AppliedChange.ID) async throws -> WriteReport? {
         guard let index = appliedChanges.firstIndex(where: { $0.id == id }), appliedChanges[index].isReverted else { return nil }
         let changes = appliedChanges[index].pendingChanges.compactMap { $0.revalidated(against: savedLibrary) }
         guard !changes.isEmpty else { throw TracksGone() }
-        let (changeSet, trashed, report) = try await write(changes)
+        let (changeSet, trashed, written) = try await write(changes)
+        var report = written
         if let index = appliedChanges.firstIndex(where: { $0.id == id }) {
             appliedChanges[index].changes = changeSet
             appliedChanges[index].trashedFiles = trashed
             appliedChanges[index].revertedAt = nil
         }
-        try await reload()
+        await reloadAfterWriting(&report)
         return report
+    }
+
+    /// Loads the library after writing to it. The write has already happened, so if this fails it's
+    /// reported rather than thrown.
+    private func reloadAfterWriting(_ report: inout WriteReport) async {
+        do {
+            try await load()
+        } catch {
+            report.notReloaded = error.localizedDescription
+        }
     }
 
     /// Thrown when applying reverted changes again, if none of their tracks are left.
@@ -244,7 +276,7 @@ public final class LibrarySession {
 
     /// Writes changes to `master.db`, expecting it to be unchanged since it was loaded, then moves
     /// files to the Trash for removals that ask for it.
-    private func write(_ changes: [PendingChange]) async throws -> (ChangeSet, [TrashedFile], FileReport) {
+    private func write(_ changes: [PendingChange]) async throws -> (ChangeSet, [TrashedFile], WriteReport) {
         let saved = savedLibrary
         let changeSet = try await serialised {
             try RekordboxLibrary.apply(changes, in: saved.location, expectedUpdateCount: saved.updateCount)
@@ -255,7 +287,7 @@ public final class LibrarySession {
         }
         let moveToTrash = files.moveToTrash
         let (trashed, failures) = await Task.detached(priority: .userInitiated) { moveToTrash(paths) }.value
-        return (changeSet, trashed, FileReport(notMovedToTrash: failures))
+        return (changeSet, trashed, WriteReport(notMovedToTrash: failures))
     }
 
     // MARK: Undo and redo
@@ -314,8 +346,8 @@ public final class LibrarySession {
 
     /// Undoes the latest step. If it fails, the step stays to be undone.
     @discardableResult
-    public func undo() async throws -> FileReport {
-        guard canUndo, let step = undoSteps.popLast() else { return FileReport() }
+    public func undo() async throws -> WriteReport {
+        guard canUndo, let step = undoSteps.popLast() else { return WriteReport() }
         do {
             let report = try await whileWriting { try await perform(step, undoing: true) }
             redoSteps.append(step)
@@ -328,8 +360,8 @@ public final class LibrarySession {
 
     /// Redoes the latest undone step. If it fails, the step stays to be redone.
     @discardableResult
-    public func redo() async throws -> FileReport {
-        guard canRedo, let step = redoSteps.popLast() else { return FileReport() }
+    public func redo() async throws -> WriteReport {
+        guard canRedo, let step = redoSteps.popLast() else { return WriteReport() }
         do {
             let report = try await whileWriting { try await perform(step, undoing: false) }
             undoSteps.append(step)
@@ -340,16 +372,16 @@ public final class LibrarySession {
         }
     }
 
-    private func perform(_ step: ChangeStep, undoing: Bool) async throws -> FileReport {
+    private func perform(_ step: ChangeStep, undoing: Bool) async throws -> WriteReport {
         switch (step, undoing) {
         case (.stage(let change, _), true): _ = remove([change])
         case (.stage(let change, _), false): add([change])
         case (.discard(let changes), true): add(changes.map(\.change), at: changes.map(\.position))
         case (.discard(let changes), false): _ = remove(changes.map(\.change))
-        case (.apply(let id), true), (.revert(let id), false): return try await performRevert(id) ?? FileReport()
-        case (.apply(let id), false), (.revert(let id), true): return try await performApplyAgain(id) ?? FileReport()
+        case (.apply(let id), true), (.revert(let id), false): return try await performRevert(id) ?? WriteReport()
+        case (.apply(let id), false), (.revert(let id), true): return try await performApplyAgain(id) ?? WriteReport()
         }
-        return FileReport()
+        return WriteReport()
     }
 
     // MARK: Writing safely
@@ -357,7 +389,14 @@ public final class LibrarySession {
     /// Runs `body` with `isWriting` set.
     private func whileWriting<T>(_ body: () async throws -> T) async rethrows -> T {
         operationsInProgress += 1
-        defer { operationsInProgress -= 1 }
+        defer {
+            operationsInProgress -= 1
+            if operationsInProgress == 0 {
+                let waiters = writeWaiters
+                writeWaiters = []
+                waiters.forEach { $0.resume() }
+            }
+        }
         return try await body()
     }
 

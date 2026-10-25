@@ -14,12 +14,15 @@ struct LibrarySessionTests {
     }
 
     /// Files for tests: backups go in the fixture's folder, and "the Trash" is a folder there too.
-    private func files(backUp: (@Sendable (URL) throws -> Void)? = nil) -> FileOperations {
+    private func files(
+        backUp: (@Sendable (URL) throws -> Void)? = nil,
+        moveToTrash: (@Sendable ([URL]) -> (trashed: [TrashedFile], failures: [String]))? = nil
+    ) -> FileOperations {
         let backups = fixture.folder.appending(path: "Backups")
         let trash = fixture.folder.appending(path: "Trash")
         return FileOperations(
             backUp: backUp ?? { try FileOperations.backUp($0, into: backups, keeping: 10) },
-            moveToTrash: { paths in
+            moveToTrash: moveToTrash ?? { paths in
                 FileOperations.moveFiles(paths) { file in
                     try FileManager.default.createDirectory(at: trash, withIntermediateDirectories: true)
                     let destination = trash.appending(path: file.lastPathComponent)
@@ -31,8 +34,11 @@ struct LibrarySessionTests {
         )
     }
 
-    private func session(backUp: (@Sendable (URL) throws -> Void)? = nil) throws -> LibrarySession {
-        LibrarySession(library: try fixture.loadLibrary(), files: files(backUp: backUp))
+    private func session(
+        backUp: (@Sendable (URL) throws -> Void)? = nil,
+        moveToTrash: (@Sendable ([URL]) -> (trashed: [TrashedFile], failures: [String]))? = nil
+    ) throws -> LibrarySession {
+        LibrarySession(library: try fixture.loadLibrary(), files: files(backUp: backUp, moveToTrash: moveToTrash))
     }
 
     private func savedColor(of id: Track.ID) throws -> TrackColor? {
@@ -260,6 +266,56 @@ struct LibrarySessionTests {
         #expect(session.undoActionName == "Apply Changes")
     }
 
+    @Test func whileApplyingReloadWaitsAndOnlyTheChangesBeingWrittenAreLocked() async throws {
+        let gate = DispatchSemaphore(value: 0)
+        let session = try session(backUp: { _ in gate.wait() })
+        session.setColor(rhythmic, forTrackIDs: [LibraryFixture.copperSun])
+        let beingWritten = try #require(session.pendingChanges.first)
+
+        let applying = Task { try await session.applyPendingChanges() }
+        await eventually { session.isWriting }
+        #expect(session.isBeingWritten(beingWritten))
+
+        // Reloading mid-write could read a half-written library; it's refused until the write is done.
+        try await session.reload()
+        #expect(session.pendingChanges.count == 1)
+
+        // A change staged while writing isn't part of the write, so it can be discarded.
+        session.setColor(melodic, forTrackIDs: [LibraryFixture.nightDrive])
+        let stagedMeanwhile = try #require(session.pendingChanges.last)
+        #expect(!session.isBeingWritten(stagedMeanwhile))
+        session.discard([beingWritten, stagedMeanwhile])
+        #expect(session.pendingChanges == [beingWritten])
+
+        gate.signal()
+        try await applying.value
+        #expect(session.pendingChanges.isEmpty)
+        // Undo takes back the discard (taken while writing) first, then the apply.
+        #expect(session.undoActionName == "Discard Change")
+        try await session.undo()
+        #expect(session.pendingChanges == [stagedMeanwhile])
+        #expect(session.undoActionName == "Set Colour")
+        try await session.undo()
+        #expect(session.undoActionName == "Apply Changes")
+    }
+
+    @Test func aReloadFailingAfterAWriteIsReportedNotThrown() async throws {
+        let library = fixture.folder.appending(path: "master.db")
+        // Moving files happens after writing and before reloading, so this makes the reload fail.
+        let session = try session(moveToTrash: { _ in
+            try? FileManager.default.moveItem(at: library, to: library.appendingPathExtension("moved"))
+            return ([], [])
+        })
+        session.removeTracks(withIDs: [LibraryFixture.copperSun], movingFilesToTrash: true)
+
+        let report = try await session.applyPendingChanges()
+        #expect(report.notReloaded != nil)
+        // The write happened, and the session knows it.
+        #expect(session.appliedChanges.count == 1)
+        #expect(session.pendingChanges.isEmpty)
+        #expect(session.undoActionName == "Apply Changes")
+    }
+
     @Test func waitingForWritesReturnsOnceAWriteHasFinished() async throws {
         let gate = DispatchSemaphore(value: 0)
         let session = try session(backUp: { _ in gate.wait() })
@@ -309,6 +365,19 @@ struct LibrarySessionTests {
         let snapshots = try FileManager.default.contentsOfDirectory(at: try #require(backups.first), includingPropertiesForKeys: nil)
         #expect(backups.count == 1)
         #expect(snapshots.count == 1)
+    }
+
+    @Test func theRealFileOperationsBackUpALibraryOncePerRun() async throws {
+        let backups = fixture.folder.appending(path: "Backups")
+        let files = FileOperations.live(backupsDirectory: backups)
+        for color in [rhythmic, melodic] {
+            // A new session each time, as when the same library is opened again.
+            let session = LibrarySession(library: try fixture.loadLibrary(), files: files)
+            session.setColor(color, forTrackIDs: [LibraryFixture.copperSun])
+            try await session.applyPendingChanges()
+        }
+        let library = try #require(try FileManager.default.contentsOfDirectory(at: backups, includingPropertiesForKeys: nil).first)
+        #expect(try FileManager.default.contentsOfDirectory(at: library, includingPropertiesForKeys: nil).count == 1)
     }
 
     @Test func backupsKeepTheFirstAndTheMostRecent() throws {

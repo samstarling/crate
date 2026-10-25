@@ -16,6 +16,8 @@ struct TrackTable: View {
     @State private var sortOrder: [KeyPathComparator<Track>] = []
     @State private var searchText = ""
     @FocusState private var isSearchFocused: Bool
+    /// Identifies this table to the model while its search field is being edited.
+    @State private var id = UUID()
     /// Tracks waiting for the user to confirm removing them from the collection.
     @State private var tracksToRemove: [Track]?
 
@@ -47,8 +49,8 @@ struct TrackTable: View {
         )
             .searchable(text: $searchText, placement: .toolbar, prompt: "Title, artist, album…")
             .searchFocused($isSearchFocused)
-            .onChange(of: isSearchFocused) { model.isEditingText = isSearchFocused }
-            .onDisappear { model.isEditingText = false }
+            .onChange(of: isSearchFocused) { model.setEditingText(isSearchFocused, in: id) }
+            .onDisappear { model.setEditingText(false, in: id) }
             .navigationTitle(title)
             .navigationSubtitle(summary(of: visibleTracks))
             .onAppear(perform: refreshVisibleTracks)

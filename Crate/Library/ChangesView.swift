@@ -106,6 +106,8 @@ struct ChangesView: View {
     private func pendingRow(for change: StagedChange) -> some View {
         Label {
             Text(change.summary)
+                // Being applied right now, so it can't be discarded.
+                .foregroundStyle(model.session?.isBeingWritten(change) == true ? .secondary : .primary)
         } icon: {
             switch change.change {
             case .setColor(let colorID, _):
@@ -154,8 +156,9 @@ struct ChangesView: View {
 
     // MARK: Actions
 
+    /// The selected pending changes that can be discarded: not those being applied right now.
     private func pendingChanges(in rows: Set<Row>) -> [StagedChange] {
-        model.pendingChanges.filter { rows.contains(.pending($0.id)) }
+        model.pendingChanges.filter { rows.contains(.pending($0.id)) && model.session?.isBeingWritten($0) != true }
     }
 
     /// The applied change selected, if exactly one is and nothing is being written.

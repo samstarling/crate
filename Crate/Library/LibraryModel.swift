@@ -15,8 +15,10 @@ struct AppAlert: Identifiable {
 final class LibraryModel {
     private(set) var session: LibrarySession?
     private(set) var isLoading = false
-    /// Whether a text field (the search field) is being edited, so Edit ▸ Undo goes to it.
-    var isEditingText = false
+    /// The view whose text field (a search field) is being edited, if any, so Edit ▸ Undo goes to it.
+    /// Views claim and release it by ID, so one disappearing can't clear another's claim.
+    private(set) var textEditor: UUID?
+    var isEditingText: Bool { textEditor != nil }
     var alert: AppAlert?
 
     @ObservationIgnored private let files: FileOperations
@@ -49,8 +51,13 @@ final class LibraryModel {
         await open(folder)
     }
 
-    /// Opens a library, starting afresh: changes pending for another library are gone.
+    /// Opens a library, starting afresh: changes pending for another library are gone. Opening the
+    /// library that's already open reloads it instead, keeping its changes.
     func open(_ folder: URL) async {
+        if folder.standardizedFileURL == session?.location.standardizedFileURL {
+            await reload()
+            return
+        }
         isLoading = true
         defer { isLoading = false }
         do {
@@ -63,6 +70,8 @@ final class LibraryModel {
 
     /// Loads the open library again, keeping pending changes.
     func reload() async {
+        isLoading = true
+        defer { isLoading = false }
         do {
             try await session?.reload()
         } catch {
@@ -135,17 +144,7 @@ final class LibraryModel {
     }
 
     func applyPendingChanges() async {
-        guard let session else { return }
-        do {
-            report(try await session.applyPendingChanges())
-        } catch is RekordboxLibrary.LibraryChanged {
-            alert = AppAlert(
-                title: "Your Library Has Changed",
-                message: "Your Rekordbox library has changed since Crate loaded it, probably in Rekordbox, so nothing was applied. Crate has reloaded it, and your changes are still pending: review them in Changes, then apply them again."
-            )
-        } catch {
-            alert = AppAlert(title: "Couldn\u{2019}t Apply Changes", message: error.localizedDescription)
-        }
+        await run("Couldn\u{2019}t Apply Changes") { try await $0.applyPendingChanges() }
     }
 
     func revert(_ applied: AppliedChange) async {
@@ -165,18 +164,37 @@ final class LibraryModel {
     }
 
     /// Runs something on the session, showing an alert titled `failureTitle` if it fails.
-    private func run(_ failureTitle: String, _ body: (LibrarySession) async throws -> LibrarySession.FileReport) async {
+    private func run(_ failureTitle: String, _ body: (LibrarySession) async throws -> LibrarySession.WriteReport) async {
         guard let session else { return }
         do {
             report(try await body(session))
+        } catch is RekordboxLibrary.LibraryChanged {
+            alert = AppAlert(
+                title: "Your Library Has Changed",
+                message: "Your Rekordbox library has changed since Crate loaded it, probably in Rekordbox, so nothing was changed. Crate has reloaded it, and your changes are still pending: review them in Changes, then try again."
+            )
         } catch {
             alert = AppAlert(title: failureTitle, message: error.localizedDescription)
         }
     }
 
-    /// Tells the user about files that couldn't be moved to the Trash or back.
-    private func report(_ files: LibrarySession.FileReport) {
-        if !files.notMovedToTrash.isEmpty {
+    /// Marks a view's text field as being edited, or not.
+    func setEditingText(_ isEditing: Bool, in view: UUID) {
+        if isEditing {
+            textEditor = view
+        } else if textEditor == view {
+            textEditor = nil
+        }
+    }
+
+    /// Tells the user about anything that went wrong after a write that succeeded.
+    private func report(_ files: LibrarySession.WriteReport) {
+        if let reason = files.notReloaded {
+            alert = AppAlert(
+                title: "Couldn\u{2019}t Reload Library",
+                message: "Your changes were saved, but Crate couldn\u{2019}t load your library again, so what it shows may be out of date. Try File \u{25B8} Reload Library. (\(reason))"
+            )
+        } else if !files.notMovedToTrash.isEmpty {
             alert = AppAlert(
                 title: "Couldn\u{2019}t Move Files to the Trash",
                 message: "Your library was changed, but \(files.notMovedToTrash.formatted()) couldn\u{2019}t be moved to the Trash."
