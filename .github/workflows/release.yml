@@ -92,6 +92,7 @@ jobs:
             -configuration Release \
             -destination 'generic/platform=macOS' \
             -archivePath "$RUNNER_TEMP/Crate.xcarchive" \
+            -clonedSourcePackagesDirPath "$RUNNER_TEMP/SourcePackages" \
             MARKETING_VERSION="$VERSION" \
             CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER" \
             CODE_SIGN_STYLE=Manual \
@@ -129,6 +130,28 @@ jobs:
           scripts/notarize.sh "dist/Crate-$VERSION.dmg"
           xcrun stapler staple "dist/Crate-$VERSION.dmg"
           spctl --assess --type open --context context:primary-signature --verbose "dist/Crate-$VERSION.dmg"
+
+      # The appcast is uploaded with the release, and the app's SUFeedURL points at
+      # releases/latest/download/appcast.xml, so each release's appcast replaces the last.
+      - name: Generate Sparkle appcast
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          updates="$RUNNER_TEMP/updates"
+          mkdir -p "$updates"
+          cp "dist/Crate-$VERSION.zip" "$updates/"
+          gh release view "$TAG" --json body --jq .body > "$updates/Crate-$VERSION.md"
+
+          echo "$SPARKLE_PRIVATE_KEY" | "$RUNNER_TEMP/SourcePackages/artifacts/sparkle/Sparkle/bin/generate_appcast" \
+            --ed-key-file - \
+            --download-url-prefix "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/" \
+            --embed-release-notes \
+            --full-release-notes-url "https://github.com/$GITHUB_REPOSITORY/releases" \
+            --link "https://github.com/$GITHUB_REPOSITORY" \
+            -o "$GITHUB_WORKSPACE/dist/appcast.xml" \
+            "$updates"
+          cat dist/appcast.xml
 
       - name: Upload to the GitHub Release
         env:
