@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    # macOS 26 ships Xcode 26, which is needed to compile AppIcon.icon.
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build app
+        run: |
+          xcodebuild build \
+            -project Crate.xcodeproj \
+            -scheme Crate \
+            -configuration Debug \
+            -destination 'generic/platform=macOS' \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Test RekordboxKit
+        working-directory: Packages/RekordboxKit
+        run: swift test

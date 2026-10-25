@@ -1,0 +1,23 @@
+#!/bin/sh
+# Rejects commit messages that don't follow Conventional Commits, which release-please
+# reads to decide the next version. Enable with: git config core.hooksPath .githooks
+subject=$(head -n 1 "$1")
+
+case "$subject" in
+    Merge\ *|Revert\ *|fixup!\ *|squash!\ *|amend!\ *) exit 0 ;;
+esac
+
+if ! printf '%s\n' "$subject" | grep -Eq '^(feat|fix|perf|refactor|docs|test|build|ci|chore|style|revert)(\([a-zA-Z0-9_-]+\))?!?: .+'; then
+    cat >&2 <<EOF
+Commit message doesn't follow Conventional Commits:
+
+    $subject
+
+Use "<type>: <description>", e.g.
+    feat: show smart playlists          (minor bump)
+    fix: read Date Added from StockDate (patch bump)
+    feat!: drop Rekordbox 6 support     (major bump; minor while below 1.0)
+Other types: perf, refactor, docs, test, build, ci, chore, style, revert.
+EOF
+    exit 1
+fi
