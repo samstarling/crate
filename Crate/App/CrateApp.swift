@@ -13,6 +13,7 @@ struct CrateApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var player = PlayerModel()
     private let updater = Updater()
+    @AppStorage(TagInspector.visibilityKey) private var showsTagInspector = false
 
     private var model: LibraryModel { appDelegate.model }
 
@@ -63,6 +64,10 @@ struct CrateApp: App {
                 }
                 .keyboardShortcut("z", modifiers: [.command, .shift])
                 .disabled(!model.isEditingText && !model.canRedo)
+            }
+            CommandGroup(after: .sidebar) {
+                Button(showsTagInspector ? "Hide Tags" : "Show Tags") { showsTagInspector.toggle() }
+                    .keyboardShortcut("i", modifiers: [.command, .option])
             }
             CommandMenu("Controls") {
                 Button(player.isPlaying ? "Pause" : "Play") { player.togglePlayPause() }

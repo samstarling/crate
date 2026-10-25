@@ -5,13 +5,13 @@ struct TrackTable: View {
     let title: String
     let tracks: [Track]
     let library: RekordboxLibrary
+    @Binding var selection: Set<Track.ID>
 
     @Environment(LibraryModel.self) private var model
     @Environment(PlayerModel.self) private var player
 
     /// Filtered and sorted rows, cached so redraws don't redo the work.
     @State private var visibleTracks: [Track] = []
-    @State private var selection = Set<Track.ID>()
     /// Empty means "playlist order".
     @State private var sortOrder: [KeyPathComparator<Track>] = []
     @State private var searchText = ""
@@ -101,8 +101,9 @@ struct TrackTable: View {
 }
 
 #Preview(traits: .sampleData) {
+    @Previewable @State var selection = Set<Track.ID>()
     NavigationStack {
-        TrackTable(title: "Collection", tracks: RekordboxLibrary.preview.tracks, library: .preview)
+        TrackTable(title: "Collection", tracks: RekordboxLibrary.preview.tracks, library: .preview, selection: $selection)
     }
     .frame(width: 1100, height: 300)
 }
