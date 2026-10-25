@@ -9,6 +9,10 @@ final class LibraryModel {
 
     private static let locationDefaultsKey = "LibraryLocation"
 
+    init(library: RekordboxLibrary? = nil) {
+        self.library = library
+    }
+
     /// Opens the last library the user picked, falling back to Rekordbox's standard location.
     func openInitialLibrary() async {
         let saved = UserDefaults.standard.string(forKey: Self.locationDefaultsKey).map { URL(filePath: $0, directoryHint: .isDirectory) }

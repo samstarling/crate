@@ -41,7 +41,6 @@ struct ContentView: View {
         }
         .safeAreaInset(edge: .bottom, spacing: 0) { PlayerBar() }
         .frame(minWidth: 900, minHeight: 500)
-        .task { await model.openInitialLibrary() }
         .alert(
             "Couldn't open library",
             isPresented: Binding(get: { model.errorMessage != nil }, set: { if !$0 { model.errorMessage = nil } })
@@ -84,4 +83,14 @@ struct ContentView: View {
                 .id("collection")
         }
     }
+}
+
+#Preview("Library", traits: .sampleData) {
+    ContentView()
+}
+
+#Preview("No library") {
+    ContentView()
+        .environment(LibraryModel())
+        .environment(PlayerModel())
 }

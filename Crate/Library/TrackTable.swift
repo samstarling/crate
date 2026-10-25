@@ -55,3 +55,10 @@ struct TrackTable: View {
         return "\(tracks.count) tracks · \(duration)"
     }
 }
+
+#Preview(traits: .sampleData) {
+    NavigationStack {
+        TrackTable(title: "Collection", tracks: RekordboxLibrary.preview.tracks, library: .preview)
+    }
+    .frame(width: 1100, height: 300)
+}

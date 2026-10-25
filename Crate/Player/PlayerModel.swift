@@ -71,3 +71,14 @@ final class PlayerModel {
         player.seek(to: CMTime(seconds: seconds, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
     }
 }
+
+extension PlayerModel {
+    /// A player showing `track` as loaded and paused at `time`, without opening its audio file.
+    static func preview(_ track: Track, waveform: Waveform?, at time: Double) -> PlayerModel {
+        let player = PlayerModel()
+        player.track = track
+        player.waveform = waveform
+        player.currentTime = time
+        return player
+    }
+}

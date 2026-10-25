@@ -23,3 +23,12 @@ struct SidebarView: View {
         .navigationSplitViewColumnWidth(min: 200, ideal: 240)
     }
 }
+
+#Preview {
+    @Previewable @State var selection: SidebarItem? = .collection
+    NavigationSplitView {
+        SidebarView(library: .preview, selection: $selection)
+    } detail: {
+        Text(String(describing: selection))
+    }
+}

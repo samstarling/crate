@@ -64,3 +64,18 @@ struct WaveformView: View {
         return Double(min(max(x / width, 0), 1)) * duration
     }
 }
+
+#Preview {
+    @Previewable @State var position = 120.0
+    let track = Track.previews[0]
+    WaveformView(
+        waveform: .preview(duration: track.duration, bpm: track.bpm),
+        memoryCues: track.memoryCues,
+        duration: Double(track.duration),
+        position: position
+    ) { time, _ in
+        position = time
+    }
+    .frame(width: 600, height: 40)
+    .padding()
+}

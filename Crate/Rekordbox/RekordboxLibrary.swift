@@ -13,6 +13,15 @@ nonisolated struct RekordboxLibrary: Sendable {
     /// (Key path literals capture nothing, so sharing them across threads is safe.)
     nonisolated(unsafe) private(set) var sortRanks: [PartialKeyPath<Track>: [Int]]
 
+    init(location: URL, tracks: [Track], playlists: [Playlist], colors: [TrackColor]) {
+        self.location = location
+        self.tracks = tracks
+        self.tracksByID = Dictionary(tracks.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        self.playlists = playlists
+        self.colors = colors
+        self.sortRanks = Self.sortRanks(for: tracks)
+    }
+
     static let defaultLocation = FileManager.default.homeDirectoryForCurrentUser
         .appending(path: "Library/Pioneer/rekordbox", directoryHint: .isDirectory)
 
@@ -51,10 +60,8 @@ nonisolated struct RekordboxLibrary: Sendable {
         return RekordboxLibrary(
             location: folder,
             tracks: tracks,
-            tracksByID: Dictionary(tracks.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }),
             playlists: playlists,
-            colors: colors.values.sorted { $0.id < $1.id },
-            sortRanks: sortRanks(for: tracks)
+            colors: colors.values.sorted { $0.id < $1.id }
         )
     }
 

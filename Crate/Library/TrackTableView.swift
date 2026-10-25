@@ -232,3 +232,18 @@ private final class TrackNSTableView: NSTableView {
         }
     }
 }
+
+#Preview {
+    @Previewable @State var sortOrder: [KeyPathComparator<Track>] = []
+    @Previewable @State var selection: Set<Track.ID> = []
+    TrackTableView(
+        tracks: sortOrder.first.map { RekordboxLibrary.preview.sorted(Track.previews, by: $0) } ?? Track.previews,
+        colors: TrackColor.previews,
+        sortOrder: $sortOrder,
+        selection: $selection,
+        onPlay: { _ in },
+        onTogglePlayback: {},
+        onSetColor: { _, _ in }
+    )
+    .frame(width: 1100, height: 250)
+}

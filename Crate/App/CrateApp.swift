@@ -15,6 +15,7 @@ struct CrateApp: App {
     var body: some Scene {
         Window("Crate", id: "main") {
             ContentView()
+                .task { await model.openInitialLibrary() }
                 .environment(model)
                 .environment(player)
         }

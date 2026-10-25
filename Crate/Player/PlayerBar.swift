@@ -72,3 +72,14 @@ struct PlayerBar: View {
         Duration.seconds(Int(seconds.isFinite ? seconds : 0)).formatted(.time(pattern: .minuteSecond))
     }
 }
+
+#Preview("Playing", traits: .sampleData) {
+    PlayerBar()
+        .frame(width: 900)
+}
+
+#Preview("Not analysed") {
+    PlayerBar()
+        .environment(PlayerModel.preview(Track.previews[5], waveform: nil, at: 20))
+        .frame(width: 900)
+}
