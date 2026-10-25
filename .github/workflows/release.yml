@@ -33,14 +33,18 @@ jobs:
     env:
       VERSION: ${{ needs.release-please.outputs.version }}
       TAG: ${{ needs.release-please.outputs.tag_name }}
-      KEYCHAIN: ${{ runner.temp }}/signing.keychain-db
-      ASC_API_KEY_PATH: ${{ runner.temp }}/AuthKey.p8
       ASC_API_KEY_ID: ${{ secrets.ASC_API_KEY_ID }}
       ASC_API_ISSUER_ID: ${{ secrets.ASC_API_ISSUER_ID }}
     steps:
       - uses: actions/checkout@v5
         with:
           ref: ${{ needs.release-please.outputs.tag_name }}
+
+      # The runner context isn't available in job-level env, so temp paths are set here.
+      - name: Set paths
+        run: |
+          echo "KEYCHAIN=$RUNNER_TEMP/signing.keychain-db" >> "$GITHUB_ENV"
+          echo "ASC_API_KEY_PATH=$RUNNER_TEMP/AuthKey.p8" >> "$GITHUB_ENV"
 
       - name: Install signing certificate and notary key
         env:
