@@ -3,13 +3,15 @@ import Foundation
 /// A snapshot of a Rekordbox 6/7 library, read from its `master.db`.
 nonisolated struct RekordboxLibrary: Sendable {
     let location: URL
-    let tracks: [Track]
-    let tracksByID: [String: Track]
+    private(set) var tracks: [Track]
+    private(set) var tracksByID: [String: Track]
     let playlists: [Playlist]
+    /// The eight track colours, in Rekordbox's order.
+    let colors: [TrackColor]
     /// For each sortable key path, every track's rank (indexed by `Track.libraryIndex`) in ascending
     /// order. Equal values share a rank. Computed once at load so sorting is just integer comparisons.
     /// (Key path literals capture nothing, so sharing them across threads is safe.)
-    nonisolated(unsafe) let sortRanks: [PartialKeyPath<Track>: [Int]]
+    nonisolated(unsafe) private(set) var sortRanks: [PartialKeyPath<Track>: [Int]]
 
     static let defaultLocation = FileManager.default.homeDirectoryForCurrentUser
         .appending(path: "Library/Pioneer/rekordbox", directoryHint: .isDirectory)
@@ -41,7 +43,8 @@ nonisolated struct RekordboxLibrary: Sendable {
         }
 
         let database = try SQLiteDatabase(url: scratch.appending(path: "master.db"), key: databaseKey)
-        let tracks = try loadTracks(from: database, artworkRoot: folder.appending(path: "share"))
+        let colors = try loadColors(from: database)
+        let tracks = try loadTracks(from: database, colors: colors, artworkRoot: folder.appending(path: "share"))
         let playlists = try loadPlaylists(from: database)
 
         return RekordboxLibrary(
@@ -49,31 +52,34 @@ nonisolated struct RekordboxLibrary: Sendable {
             tracks: tracks,
             tracksByID: Dictionary(tracks.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }),
             playlists: playlists,
+            colors: colors.values.sorted { $0.id < $1.id },
             sortRanks: sortRanks(for: tracks)
         )
     }
 
-    private static func sortRanks(for tracks: [Track]) -> [PartialKeyPath<Track>: [Int]] {
-        func ranks<Value>(_ keyPath: KeyPath<Track, Value>, by areInIncreasingOrder: (Value, Value) -> Bool) -> [Int] {
-            let values = tracks.map { $0[keyPath: keyPath] }
-            let order = values.indices.sorted { areInIncreasingOrder(values[$0], values[$1]) }
-            var ranks = [Int](repeating: 0, count: values.count)
-            var rank = 0
-            for (position, index) in order.enumerated() {
-                if position > 0, areInIncreasingOrder(values[order[position - 1]], values[index]) {
-                    rank = position
-                }
-                ranks[index] = rank
+    private static func ranks<Value>(
+        _ tracks: [Track], _ keyPath: KeyPath<Track, Value>, by areInIncreasingOrder: (Value, Value) -> Bool
+    ) -> [Int] {
+        let values = tracks.map { $0[keyPath: keyPath] }
+        let order = values.indices.sorted { areInIncreasingOrder(values[$0], values[$1]) }
+        var ranks = [Int](repeating: 0, count: values.count)
+        var rank = 0
+        for (position, index) in order.enumerated() {
+            if position > 0, areInIncreasingOrder(values[order[position - 1]], values[index]) {
+                rank = position
             }
-            return ranks
+            ranks[index] = rank
         }
+        return ranks
+    }
 
+    private static func sortRanks(for tracks: [Track]) -> [PartialKeyPath<Track>: [Int]] {
         func text(_ keyPath: KeyPath<Track, String>) -> (PartialKeyPath<Track>, [Int]) {
-            (keyPath, ranks(keyPath) { $0.localizedStandardCompare($1) == .orderedAscending })
+            (keyPath, ranks(tracks, keyPath) { $0.localizedStandardCompare($1) == .orderedAscending })
         }
 
         func number<Value: Comparable>(_ keyPath: KeyPath<Track, Value>) -> (PartialKeyPath<Track>, [Int]) {
-            (keyPath, ranks(keyPath, by: <))
+            (keyPath, ranks(tracks, keyPath, by: <))
         }
 
         return Dictionary(uniqueKeysWithValues: [
@@ -83,13 +89,16 @@ nonisolated struct RekordboxLibrary: Sendable {
         ])
     }
 
-    private static func loadTracks(from database: SQLiteDatabase, artworkRoot: URL) throws -> [Track] {
+    private static func loadColors(from database: SQLiteDatabase) throws -> [Int: TrackColor] {
         var colors: [Int: TrackColor] = [:]
         try database.query("SELECT ID, Commnt FROM djmdColor") { row in
             let id = Int(row.string(0) ?? "") ?? 0
             colors[id] = TrackColor(id: id, name: row.string(1) ?? "")
         }
+        return colors
+    }
 
+    private static func loadTracks(from database: SQLiteDatabase, colors: [Int: TrackColor], artworkRoot: URL) throws -> [Track] {
         var tracks: [Track] = []
         try database.query("""
             SELECT c.ID, c.Title, a.Name, al.Name, g.Name, l.Name, k.ScaleName, c.BPM, c.Length,
@@ -175,6 +184,60 @@ nonisolated struct RekordboxLibrary: Sendable {
             guard seen.insert(id).inserted else { return nil }
             return tracksByID[id]
         }
+    }
+
+    // MARK: Editing
+
+    /// Writes a new colour (or none) for the given tracks to `master.db` in `folder`.
+    ///
+    /// Each edited row gets a fresh `rb_local_usn` from Rekordbox's `localUpdateCount` counter and a
+    /// new `updated_at`, matching what Rekordbox itself does, so it sees the change as a local edit.
+    /// Rekordbox must not be running, or it may overwrite the change.
+    static func saveColor(_ color: TrackColor?, forTrackIDs ids: [Track.ID], in folder: URL) throws {
+        let database = try SQLiteDatabase(url: folder.appending(path: "master.db"), key: databaseKey, readOnly: false)
+        let now = timestampFormatter.string(from: .now)
+
+        try database.transaction {
+            var updateCount: Int?
+            try database.query("SELECT int_1 FROM agentRegistry WHERE registry_id = 'localUpdateCount'") { row in
+                updateCount = row.int(0)
+            }
+            guard var updateCount else {
+                throw SQLiteDatabase.Error(message: "This library has no update counter, so Crate can't safely edit it.")
+            }
+
+            for id in ids {
+                updateCount += 1
+                try database.execute(
+                    "UPDATE djmdContent SET ColorID = ?, rb_local_usn = ?, updated_at = ? WHERE ID = ?",
+                    [.text(String(color?.id ?? 0)), .int(updateCount), .text(now), .text(id)]
+                )
+            }
+            try database.execute(
+                "UPDATE agentRegistry SET int_1 = ?, updated_at = ? WHERE registry_id = 'localUpdateCount'",
+                [.int(updateCount), .text(now)]
+            )
+        }
+    }
+
+    /// Rekordbox's timestamp format, e.g. `2026-07-11 23:11:07.856 +00:00`.
+    private static let timestampFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS xxx"
+        return formatter
+    }()
+
+    /// Updates this in-memory snapshot after a successful `saveColor`.
+    mutating func applyColor(_ color: TrackColor?, toTrackIDs ids: [Track.ID]) {
+        for id in ids {
+            guard var track = tracksByID[id] else { continue }
+            track.color = color
+            tracks[track.libraryIndex] = track
+            tracksByID[id] = track
+        }
+        sortRanks[\Track.colorSortKey] = Self.ranks(tracks, \.colorSortKey, by: <)
     }
 
     /// Sorts `tracks` using the precomputed ranks. Ties keep their existing (e.g. playlist) order.

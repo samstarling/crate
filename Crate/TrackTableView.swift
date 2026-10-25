@@ -7,8 +7,11 @@ import SwiftUI
 /// few thousand tracks. `NSTableView` just reloads the visible rows.
 struct TrackTableView: NSViewRepresentable {
     let tracks: [Track]
+    /// The colours offered in the Colour column and context menu.
+    let colors: [TrackColor]
     @Binding var sortOrder: [KeyPathComparator<Track>]
     @Binding var selection: Set<Track.ID>
+    let onSetColor: ([Track.ID], TrackColor?) -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -115,10 +118,19 @@ struct TrackTableView: NSViewRepresentable {
             guard let tableColumn, let column = TrackColumn.byID[tableColumn.identifier.rawValue] else { return nil }
             let track = tracks[row]
 
-            if column.content == .artwork {
+            switch column.content {
+            case .artwork:
                 let cell = tableView.makeView(withIdentifier: ArtworkCellView.identifier, owner: nil) as? ArtworkCellView ?? ArtworkCellView()
                 cell.url = track.artworkURL
                 return cell
+            case .color:
+                let cell = tableView.makeView(withIdentifier: ColorCellView.identifier, owner: nil) as? ColorCellView ?? ColorCellView()
+                cell.configure(selected: track.color, colors: parent.colors) { [weak self] color in
+                    self?.parent.onSetColor([track.id], color)
+                }
+                return cell
+            case .text, .number:
+                break
             }
 
             let cell = tableView.makeView(withIdentifier: tableColumn.identifier, owner: nil) as? TextCellView
@@ -136,10 +148,35 @@ struct TrackTableView: NSViewRepresentable {
 
         func menuNeedsUpdate(_ menu: NSMenu) {
             menu.removeAllItems()
-            guard !clickedRows.isEmpty else { return }
-            let item = NSMenuItem(title: "Show in Finder", action: #selector(revealClickedTracks), keyEquivalent: "")
+            let rows = clickedRows
+            guard !rows.isEmpty else { return }
+
+            let colorMenu = NSMenu()
+            let current = Set(rows.map { tracks[$0].color?.id ?? 0 })
+            for color in [nil] + parent.colors.map(Optional.some) {
+                let colorItem = item(color?.name ?? "None", action: #selector(setColorFromMenu(_:)))
+                colorItem.tag = color?.id ?? 0
+                colorItem.image = color.map { ColorCellView.swatch(for: $0) }
+                colorItem.state = current == [colorItem.tag] ? .on : .off
+                colorMenu.addItem(colorItem)
+            }
+            let colorItem = NSMenuItem(title: "Colour", action: nil, keyEquivalent: "")
+            colorItem.submenu = colorMenu
+            menu.addItem(colorItem)
+
+            menu.addItem(.separator())
+            menu.addItem(item("Show in Finder", action: #selector(revealClickedTracks)))
+        }
+
+        private func item(_ title: String, action: Selector) -> NSMenuItem {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
             item.target = self
-            menu.addItem(item)
+            return item
+        }
+
+        @objc private func setColorFromMenu(_ sender: NSMenuItem) {
+            let ids = clickedRows.map { tracks[$0].id }
+            parent.onSetColor(ids, parent.colors.first { $0.id == sender.tag })
         }
 
         /// The rows a right-click or double-click applies to: the whole selection if the clicked row is part of it.
@@ -162,7 +199,7 @@ struct TrackTableView: NSViewRepresentable {
 
 struct TrackColumn {
     enum Content {
-        case artwork, text, number
+        case artwork, color, text, number
     }
 
     let id: String
@@ -205,15 +242,7 @@ struct TrackColumn {
 
     static let all: [TrackColumn] = [
         TrackColumn("artwork", "", width: 22, minWidth: 22, content: .artwork, comparator: nil),
-        TrackColumn("colour", "Colour", width: 80, minWidth: 50, comparator: KeyPathComparator(\.colorSortKey)) { field, track in
-            guard let color = track.color else {
-                field.stringValue = ""
-                return
-            }
-            let text = NSMutableAttributedString(string: "● ", attributes: [.foregroundColor: NSColor(color.color)])
-            text.append(NSAttributedString(string: color.name, attributes: [.foregroundColor: NSColor.labelColor]))
-            field.attributedStringValue = text
-        },
+        TrackColumn("colour", "Colour", width: 90, minWidth: 60, content: .color, comparator: KeyPathComparator(\.colorSortKey)),
         text("title", "Title", \.title, width: 260, minWidth: 120),
         text("artist", "Artist", \.artist, width: 180, minWidth: 80),
         text("album", "Album", \.album, width: 160, minWidth: 60),
@@ -276,6 +305,63 @@ private final class TextCellView: NSTableCellView {
     override func prepareForReuse() {
         super.prepareForReuse()
         field.textColor = .labelColor
+    }
+}
+
+/// The Colour column: a borderless pop-up button offering None and the library's colours.
+private final class ColorCellView: NSTableCellView {
+    static let identifier = NSUserInterfaceItemIdentifier("colour")
+
+    private let popUp = NSPopUpButton(frame: .zero, pullsDown: false)
+    private var colors: [TrackColor] = []
+    private var onChange: (TrackColor?) -> Void = { _ in }
+
+    static func swatch(for color: TrackColor) -> NSImage {
+        let nsColor = NSColor(color.color)
+        let image = NSImage(size: NSSize(width: 10, height: 10), flipped: false) { rect in
+            nsColor.setFill()
+            NSBezierPath(ovalIn: rect.insetBy(dx: 1, dy: 1)).fill()
+            return true
+        }
+        return image
+    }
+
+    init() {
+        super.init(frame: .zero)
+        identifier = Self.identifier
+        popUp.isBordered = false
+        popUp.target = self
+        popUp.action = #selector(changed)
+        popUp.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(popUp)
+        NSLayoutConstraint.activate([
+            popUp.leadingAnchor.constraint(equalTo: leadingAnchor),
+            popUp.trailingAnchor.constraint(equalTo: trailingAnchor),
+            popUp.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    func configure(selected: TrackColor?, colors: [TrackColor], onChange: @escaping (TrackColor?) -> Void) {
+        self.onChange = onChange
+        if colors != self.colors {
+            self.colors = colors
+            popUp.removeAllItems()
+            popUp.addItem(withTitle: "None")
+            for color in colors {
+                popUp.addItem(withTitle: color.name)
+                popUp.lastItem?.image = Self.swatch(for: color)
+                popUp.lastItem?.tag = color.id
+            }
+        }
+        popUp.selectItem(withTag: selected?.id ?? 0)
+    }
+
+    @objc private func changed() {
+        onChange(colors.first { $0.id == popUp.selectedTag() })
     }
 }
 

@@ -21,7 +21,7 @@ nonisolated struct Track: Identifiable, Hashable, Sendable {
     /// `yyyy-MM-dd`, as stored by Rekordbox, so it sorts correctly as a string.
     let dateAdded: String
     let playCount: Int
-    let color: TrackColor?
+    var color: TrackColor?
     let comment: String
     let fileURL: URL
     let artworkURL: URL?

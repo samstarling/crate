@@ -30,6 +30,46 @@ final class LibraryModel {
         }
     }
 
+    /// Libraries already backed up this session, so we only back up before the first edit.
+    @ObservationIgnored private var backedUpLibraries = Set<URL>()
+
+    /// Saves a colour for the given tracks to `master.db`, then updates the in-memory library.
+    func setColor(_ color: TrackColor?, forTrackIDs ids: [Track.ID]) async {
+        guard let location = library?.location, !ids.isEmpty else { return }
+        if NSRunningApplication.runningApplications(withBundleIdentifier: "com.pioneerdj.rekordboxdj").first != nil {
+            errorMessage = "Quit Rekordbox before editing your library in Crate, so neither app overwrites the other's changes."
+            return
+        }
+        let needsBackup = !backedUpLibraries.contains(location)
+        do {
+            try await Task.detached(priority: .userInitiated) {
+                if needsBackup {
+                    try Self.backUp(location)
+                }
+                try RekordboxLibrary.saveColor(color, forTrackIDs: ids, in: location)
+            }.value
+            backedUpLibraries.insert(location)
+            library?.applyColor(color, toTrackIDs: ids)
+        } catch {
+            errorMessage = "Couldn't save: \(error.localizedDescription)"
+        }
+    }
+
+    /// Copies `master.db` (and any WAL files) to `~/Library/Application Support/Crate/Backups/<timestamp>/`.
+    nonisolated private static func backUp(_ location: URL) throws {
+        let fileManager = FileManager.default
+        let timestamp = Date.now.formatted(.iso8601.year().month().day().time(includingFractionalSeconds: false).timeSeparator(.omitted))
+        let destination = URL.applicationSupportDirectory
+            .appending(path: "Crate/Backups/\(timestamp)", directoryHint: .isDirectory)
+        try fileManager.createDirectory(at: destination, withIntermediateDirectories: true)
+        for name in ["master.db", "master.db-wal", "master.db-shm"] {
+            let file = location.appending(path: name)
+            if fileManager.fileExists(atPath: file.path) {
+                try fileManager.copyItem(at: file, to: destination.appending(path: name))
+            }
+        }
+    }
+
     func reload() async {
         guard let location = library?.location else { return }
         await open(location)
