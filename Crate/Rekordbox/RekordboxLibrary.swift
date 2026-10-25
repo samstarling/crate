@@ -79,7 +79,7 @@ nonisolated struct RekordboxLibrary: Sendable {
         return Dictionary(uniqueKeysWithValues: [
             text(\.title), text(\.artist), text(\.album), text(\.genre), text(\.label), text(\.key),
             number(\.dateAdded), number(\.bpm), number(\.duration), number(\.rating), number(\.year),
-            number(\.playCount),
+            number(\.playCount), number(\.colorSortKey),
         ])
     }
 

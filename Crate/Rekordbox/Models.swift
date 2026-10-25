@@ -25,6 +25,9 @@ nonisolated struct Track: Identifiable, Hashable, Sendable {
     let comment: String
     let fileURL: URL
     let artworkURL: URL?
+
+    /// Orders tracks by colour in Rekordbox's order, with uncoloured tracks last.
+    var colorSortKey: Int { color?.id ?? .max }
 }
 
 /// Rekordbox's eight fixed track colours. Their display names can be customised, so we keep the label too.
