@@ -63,6 +63,11 @@ struct TrackColumn {
         text("dateAdded", "Date Added", \.dateAdded, width: 85, minWidth: 70),
         number("plays", "Plays", \.playCount, width: 45, minWidth: 35) { $0 > 0 ? String($0) : "" },
         number("cues", "Cues", \.memoryCueCount, width: 45, minWidth: 35) { $0 > 0 ? String($0) : "" },
+        TrackColumn("location", "Location", width: 280, minWidth: 100, comparator: KeyPathComparator(\.location, comparator: .localizedStandard)) { field, track in
+            field.stringValue = (track.location as NSString).abbreviatingWithTildeInPath
+            // The start (folder) and end (file name) of a path are the useful parts.
+            field.lineBreakMode = .byTruncatingMiddle
+        },
     ]
 
     static let byID = Dictionary(uniqueKeysWithValues: all.map { ($0.id, $0) })

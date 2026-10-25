@@ -34,6 +34,9 @@ nonisolated struct Track: Identifiable, Hashable, Sendable {
 
     var memoryCueCount: Int { memoryCues.count }
 
+    /// The audio file's path.
+    var location: String { fileURL.path(percentEncoded: false) }
+
     /// Orders tracks by colour in Rekordbox's order, with uncoloured tracks last.
     var colorSortKey: Int { color?.id ?? .max }
 }
