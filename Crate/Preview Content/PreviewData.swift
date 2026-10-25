@@ -130,7 +130,10 @@ struct SampleData: PreviewModifier {
     static func makeSharedContext() async throws -> (LibraryModel, PlayerModel) {
         let track = Track.previews[0]
         let player = PlayerModel.preview(track, waveform: .preview(duration: track.duration, bpm: track.bpm), at: 74)
-        let model = LibraryModel(library: .preview, pendingChanges: StagedChange.previews, appliedChanges: AppliedChange.previews)
+        let session = LibrarySession(
+            library: .preview, pendingChanges: StagedChange.previews, appliedChanges: AppliedChange.previews, files: .none
+        )
+        let model = LibraryModel(session: session, files: .none)
         return (model, player)
     }
 

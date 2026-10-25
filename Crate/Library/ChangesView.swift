@@ -182,6 +182,6 @@ struct ChangesView: View {
     NavigationStack {
         ChangesView()
     }
-    .environment(LibraryModel(library: .preview))
+    .environment(LibraryModel(session: LibrarySession(library: .preview, files: .none), files: .none))
     .frame(width: 700, height: 400)
 }

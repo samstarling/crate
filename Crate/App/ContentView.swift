@@ -105,6 +105,6 @@ struct ContentView: View {
 
 #Preview("No library") {
     ContentView()
-        .environment(LibraryModel())
+        .environment(LibraryModel(files: .none))
         .environment(PlayerModel())
 }
