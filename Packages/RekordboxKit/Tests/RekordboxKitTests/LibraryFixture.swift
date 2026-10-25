@@ -25,8 +25,7 @@ final class LibraryFixture {
     let database: SQLiteDatabase
 
     init() throws {
-        folder = FileManager.default.temporaryDirectory
-            .appending(path: "RekordboxKitTests-\(UUID().uuidString)", directoryHint: .isDirectory)
+        folder = Self.temporaryFolder()
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         database = try SQLiteDatabase(url: folder.appending(path: "master.db"), key: RekordboxLibrary.databaseKey, access: .create)
 
@@ -35,6 +34,26 @@ final class LibraryFixture {
         }
         try database.execute(String(contentsOf: schemaURL, encoding: .utf8))
         try populate()
+    }
+
+    /// A copy of a library Rekordbox made itself (`Fixtures/Library`); see `RekordboxMadeLibrary`
+    /// for what's in it.
+    static func rekordboxMade() throws -> LibraryFixture {
+        guard let source = Bundle.module.url(forResource: "Library", withExtension: nil, subdirectory: "Fixtures") else {
+            throw SQLiteDatabase.Error(message: "Fixtures/Library is missing from the test bundle.")
+        }
+        let folder = temporaryFolder()
+        try FileManager.default.copyItem(at: source, to: folder)
+        return try LibraryFixture(folder: folder)
+    }
+
+    private init(folder: URL) throws {
+        self.folder = folder
+        database = try SQLiteDatabase(url: folder.appending(path: "master.db"), key: RekordboxLibrary.databaseKey, access: .readWrite)
+    }
+
+    private static func temporaryFolder() -> URL {
+        FileManager.default.temporaryDirectory.appending(path: "RekordboxKitTests-\(UUID().uuidString)", directoryHint: .isDirectory)
     }
 
     deinit {
