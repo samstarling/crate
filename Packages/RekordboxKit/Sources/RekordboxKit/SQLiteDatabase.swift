@@ -2,7 +2,7 @@ import Foundation
 import SQLCipher
 
 /// A minimal wrapper around an (optionally SQLCipher-encrypted) SQLite database.
-nonisolated final class SQLiteDatabase {
+final class SQLiteDatabase {
     struct Error: LocalizedError {
         let message: String
         var errorDescription: String? { message }

@@ -5,20 +5,24 @@ import Foundation
 ///
 /// Each entry is a big-endian `UInt16`: 3 bits each of red, green and blue, then a 5-bit height
 /// (see https://djl-analysis.deepsymmetry.org/rekordbox-export-analysis/anlz.html).
-nonisolated struct Waveform: Sendable {
-    struct Column {
+public struct Waveform: Sendable {
+    public struct Column {
         /// 0–1.
-        var height: Double
+        public var height: Double
         /// Each 0–1.
-        var red: Double
-        var green: Double
-        var blue: Double
+        public var red: Double
+        public var green: Double
+        public var blue: Double
     }
 
-    let entries: [UInt16]
+    public let entries: [UInt16]
+
+    public init(entries: [UInt16]) {
+        self.entries = entries
+    }
 
     /// Reads the colour waveform from an analysis file, or returns `nil` if it doesn't have one.
-    static func load(from url: URL) throws -> Waveform? {
+    public static func load(from url: URL) throws -> Waveform? {
         let data = try Data(contentsOf: url)
         let bytes = [UInt8](data)
         func uint32(at offset: Int) -> Int {
@@ -46,7 +50,7 @@ nonisolated struct Waveform: Sendable {
     }
 
     /// Entries per second of audio.
-    static let entriesPerSecond = 150
+    public static let entriesPerSecond = 150
 
     /// Downsamples to `count` columns for an overview.
     ///
@@ -55,7 +59,7 @@ nonisolated struct Waveform: Sendable {
     /// loudness-weighted mean colour. Averaging over about a beat keeps the overview from striping
     /// when columns are narrower than a beat, which they usually are; otherwise columns alternate
     /// between landing on and between kick drums.
-    func columns(_ count: Int, minimumWindow: Double = 0.67) -> [Column] {
+    public func columns(_ count: Int, minimumWindow: Double = 0.67) -> [Column] {
         guard count > 0, !entries.isEmpty else { return [] }
         let perColumn = Double(entries.count) / Double(count)
         let padding = Int(max(0, (minimumWindow * Double(Self.entriesPerSecond) - perColumn) / 2))

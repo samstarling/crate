@@ -7,33 +7,33 @@ import Foundation
 ///   <CONDITION PropertyName="genre" Operator="1" ValueUnit="" ValueLeft="" ValueRight=""/>
 /// </NODE>
 /// ```
-nonisolated struct SmartRule: Hashable, Sendable {
-    enum Match: Sendable {
+public struct SmartRule: Hashable, Sendable {
+    public enum Match: Sendable {
         case all, any
     }
 
-    struct Condition: Hashable, Sendable {
-        let property: String
-        let operatorCode: Int
+    public struct Condition: Hashable, Sendable {
+        public let property: String
+        public let operatorCode: Int
         /// For dates: "day", "week", "month" or "year".
-        let unit: String
-        let left: String
+        public let unit: String
+        public let left: String
         /// The upper bound, for "in range".
-        let right: String
+        public let right: String
     }
 
     /// Thrown when a rule uses something Crate can't evaluate yet, rather than showing the wrong tracks.
-    struct Unsupported: LocalizedError {
-        let reason: String
-        var errorDescription: String? { reason }
+    public struct Unsupported: LocalizedError {
+        public let reason: String
+        public var errorDescription: String? { reason }
     }
 
-    let match: Match
-    let conditions: [Condition]
+    public let match: Match
+    public let conditions: [Condition]
     /// Rekordbox can nest groups of conditions; Crate doesn't evaluate those yet.
-    let hasNestedGroups: Bool
+    public let hasNestedGroups: Bool
 
-    init?(xml: String) {
+    public init?(xml: String) {
         guard let root = (try? XMLDocument(xmlString: xml))?.rootElement(), root.name == "NODE" else { return nil }
         match = root.attribute(forName: "LogicalOperator")?.stringValue == "2" ? .any : .all
         hasNestedGroups = !root.elements(forName: "NODE").isEmpty
@@ -51,7 +51,7 @@ nonisolated struct SmartRule: Hashable, Sendable {
 
     /// Compiles the rules into a test for each track.
     /// - Parameter myTags: The library's My Tag names by ID, to resolve `myTag` conditions.
-    func predicate(myTags: [String: String], now: Date = .now) throws -> (Track) -> Bool {
+    public func predicate(myTags: [String: String], now: Date = .now) throws -> (Track) -> Bool {
         if hasNestedGroups {
             throw Unsupported(reason: "This smart playlist uses nested groups of conditions, which Crate can't evaluate yet.")
         }
@@ -63,13 +63,13 @@ nonisolated struct SmartRule: Hashable, Sendable {
     }
 }
 
-nonisolated extension SmartRule.Condition {
+extension SmartRule.Condition {
     /// Rekordbox's operator codes.
-    enum Operator: Int {
+    public enum Operator: Int {
         case equal = 1, notEqual, greater, less, inRange, inLast, notInLast, contains, notContains, startsWith, endsWith
     }
 
-    func predicate(myTags: [String: String], now: Date) throws -> (Track) -> Bool {
+    public func predicate(myTags: [String: String], now: Date) throws -> (Track) -> Bool {
         guard let op = Operator(rawValue: operatorCode) else {
             throw unsupported("uses operator \(operatorCode)")
         }

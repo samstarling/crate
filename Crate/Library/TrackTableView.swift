@@ -1,4 +1,5 @@
 import AppKit
+import RekordboxKit
 import SwiftUI
 
 /// The track list, backed by `NSTableView`.

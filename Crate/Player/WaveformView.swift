@@ -1,3 +1,4 @@
+import RekordboxKit
 import SwiftUI
 
 /// The playing track's colour waveform with its memory cues, which can be clicked or dragged to seek.

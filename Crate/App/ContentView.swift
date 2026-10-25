@@ -5,6 +5,7 @@
 //  Created by Sam Starling on 24/10/2026.
 //
 
+import RekordboxKit
 import SwiftUI
 
 enum SidebarItem: Hashable {

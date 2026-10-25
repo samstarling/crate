@@ -1,21 +1,21 @@
 import Foundation
 
 /// A snapshot of a Rekordbox 6/7 library, read from its `master.db`.
-nonisolated struct RekordboxLibrary: Sendable {
-    let location: URL
-    private(set) var tracks: [Track]
-    private(set) var tracksByID: [String: Track]
-    let playlists: [Playlist]
+public struct RekordboxLibrary: Sendable {
+    public let location: URL
+    public private(set) var tracks: [Track]
+    public private(set) var tracksByID: [String: Track]
+    public let playlists: [Playlist]
     /// The eight track colours, in Rekordbox's order.
-    let colors: [TrackColor]
+    public let colors: [TrackColor]
     /// My Tag names by ID (not including the folders that group them).
-    let myTags: [String: String]
+    public let myTags: [String: String]
     /// For each sortable key path, every track's rank (indexed by `Track.libraryIndex`) in ascending
     /// order. Equal values share a rank. Computed once at load so sorting is just integer comparisons.
     /// (Key path literals capture nothing, so sharing them across threads is safe.)
     nonisolated(unsafe) private(set) var sortRanks: [PartialKeyPath<Track>: [Int]]
 
-    init(location: URL, tracks: [Track], playlists: [Playlist], colors: [TrackColor], myTags: [String: String] = [:]) {
+    public init(location: URL, tracks: [Track], playlists: [Playlist], colors: [TrackColor], myTags: [String: String] = [:]) {
         self.location = location
         self.tracks = tracks
         self.tracksByID = Dictionary(tracks.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
@@ -25,7 +25,7 @@ nonisolated struct RekordboxLibrary: Sendable {
         self.sortRanks = Self.sortRanks(for: tracks)
     }
 
-    static let defaultLocation = FileManager.default.homeDirectoryForCurrentUser
+    public static let defaultLocation = FileManager.default.homeDirectoryForCurrentUser
         .appending(path: "Library/Pioneer/rekordbox", directoryHint: .isDirectory)
 
     /// Rekordbox encrypts `master.db` with SQLCipher 4 using this fixed key, which is the same for
@@ -36,7 +36,7 @@ nonisolated struct RekordboxLibrary: Sendable {
     ///
     /// The database is copied to a temporary directory first so we never contend with a running
     /// copy of Rekordbox, and can't possibly modify the original.
-    static func load(from folder: URL) throws -> RekordboxLibrary {
+    public static func load(from folder: URL) throws -> RekordboxLibrary {
         let fileManager = FileManager.default
         let source = folder.appending(path: "master.db")
         guard fileManager.fileExists(atPath: source.path) else {
@@ -246,14 +246,14 @@ nonisolated struct RekordboxLibrary: Sendable {
 
     /// The tracks a smart playlist's rules match, in collection order. Throws `SmartRule.Unsupported`
     /// if the rules use something Crate can't evaluate yet.
-    func smartTracks(in playlist: Playlist, now: Date = .now) throws -> [Track] {
+    public func smartTracks(in playlist: Playlist, now: Date = .now) throws -> [Track] {
         guard let rule = playlist.smartRule else {
             throw SmartRule.Unsupported(reason: "Crate couldn\u{2019}t read this smart playlist\u{2019}s rules.")
         }
         return tracks.filter(try rule.predicate(myTags: myTags, now: now))
     }
 
-    func tracks(in playlist: Playlist) -> [Track] {
+    public func tracks(in playlist: Playlist) -> [Track] {
         // A playlist can contain the same track twice, but Table needs unique row IDs.
         var seen = Set<String>()
         return playlist.trackIDs.compactMap { id in
@@ -265,7 +265,7 @@ nonisolated struct RekordboxLibrary: Sendable {
     // MARK: Editing
 
     /// Writes a new colour (or none) for the given tracks to `master.db` in `folder`.
-    static func saveColor(_ color: TrackColor?, forTrackIDs ids: [Track.ID], in folder: URL) throws {
+    public static func saveColor(_ color: TrackColor?, forTrackIDs ids: [Track.ID], in folder: URL) throws {
         try edit(in: folder) { database, nextUpdateCount, now in
             for id in ids {
                 try database.execute(
@@ -307,7 +307,7 @@ nonisolated struct RekordboxLibrary: Sendable {
     /// This mirrors what Rekordbox does: rows are deleted rather than marked deleted, and later
     /// tracks in each list are renumbered. The audio files and Rekordbox's analysis files are left
     /// on disk.
-    static func removeTracks(withIDs ids: [Track.ID], in folder: URL) throws {
+    public static func removeTracks(withIDs ids: [Track.ID], in folder: URL) throws {
         try edit(in: folder) { database, nextUpdateCount, now in
             for id in ids {
                 for (table, list) in orderedTrackTables {
@@ -378,7 +378,7 @@ nonisolated struct RekordboxLibrary: Sendable {
     }()
 
     /// Updates this in-memory snapshot after a successful `saveColor`.
-    mutating func applyColor(_ color: TrackColor?, toTrackIDs ids: [Track.ID]) {
+    public mutating func applyColor(_ color: TrackColor?, toTrackIDs ids: [Track.ID]) {
         for id in ids {
             guard var track = tracksByID[id] else { continue }
             track.color = color
@@ -389,7 +389,7 @@ nonisolated struct RekordboxLibrary: Sendable {
     }
 
     /// Sorts `tracks` using the precomputed ranks. Ties keep their existing (e.g. playlist) order.
-    func sorted(_ tracks: [Track], by comparator: KeyPathComparator<Track>) -> [Track] {
+    public func sorted(_ tracks: [Track], by comparator: KeyPathComparator<Track>) -> [Track] {
         guard let ranks = sortRanks[comparator.keyPath] else {
             return tracks.sorted(using: comparator)
         }
@@ -403,7 +403,7 @@ nonisolated struct RekordboxLibrary: Sendable {
     }
 
     /// How many playlists (not counting smart playlists) contain any of these tracks.
-    func playlistCount(containing ids: Set<Track.ID>) -> Int {
+    public func playlistCount(containing ids: Set<Track.ID>) -> Int {
         func count(_ playlists: [Playlist]) -> Int {
             playlists.reduce(0) { total, playlist in
                 let contains = playlist.kind == .playlist && playlist.trackIDs.contains(where: ids.contains)
@@ -413,7 +413,7 @@ nonisolated struct RekordboxLibrary: Sendable {
         return count(playlists)
     }
 
-    func playlist(withID id: String) -> Playlist? {
+    public func playlist(withID id: String) -> Playlist? {
         func search(_ playlists: [Playlist]) -> Playlist? {
             for playlist in playlists {
                 if playlist.id == id { return playlist }

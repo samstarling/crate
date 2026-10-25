@@ -1,4 +1,5 @@
 import AppKit
+import RekordboxKit
 import SwiftUI
 
 final class TextCellView: NSTableCellView {

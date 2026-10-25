@@ -1,5 +1,6 @@
 import AVFoundation
 import Observation
+import RekordboxKit
 
 @Observable
 final class PlayerModel {

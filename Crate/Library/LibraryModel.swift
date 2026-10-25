@@ -1,5 +1,6 @@
 import AppKit
 import Observation
+import RekordboxKit
 
 @Observable
 final class LibraryModel {

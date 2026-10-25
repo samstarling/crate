@@ -1,10 +1,7 @@
+import RekordboxKit
 import SwiftUI
 
-/// Rekordbox's eight fixed track colours. Their display names can be customised, so we keep the label too.
-nonisolated struct TrackColor: Hashable, Sendable {
-    let id: Int
-    let name: String
-
+extension TrackColor {
     var color: Color {
         switch id {
         case 1: .pink
@@ -15,6 +12,16 @@ nonisolated struct TrackColor: Hashable, Sendable {
         case 6: .cyan
         case 7: .blue
         default: .purple
+        }
+    }
+}
+
+extension Playlist {
+    var systemImage: String {
+        switch kind {
+        case .playlist: "music.note.list"
+        case .folder: "folder"
+        case .smart: "gearshape"
         }
     }
 }

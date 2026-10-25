@@ -1,3 +1,4 @@
+import RekordboxKit
 import SwiftUI
 
 // Sample data for SwiftUI previews, so they never touch a real Rekordbox library.

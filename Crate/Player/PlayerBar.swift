@@ -1,3 +1,4 @@
+import RekordboxKit
 import SwiftUI
 
 /// Now-playing controls shown along the bottom of the window.

@@ -7,7 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		2256631A308CFC5B009433C9 /* SQLCipher in Frameworks */ = {isa = PBXBuildFile; productRef = 2256631C308CFC5B009433C9 /* SQLCipher */; };
+		2256631A308CFC5B009433C9 /* RekordboxKit in Frameworks */ = {isa = PBXBuildFile; productRef = 2256631C308CFC5B009433C9 /* RekordboxKit */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -27,7 +27,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				2256631A308CFC5B009433C9 /* SQLCipher in Frameworks */,
+				2256631A308CFC5B009433C9 /* RekordboxKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -70,7 +70,7 @@
 			);
 			name = Crate;
 			packageProductDependencies = (
-				2256631C308CFC5B009433C9 /* SQLCipher */,
+				2256631C308CFC5B009433C9 /* RekordboxKit */,
 			);
 			productName = Crate;
 			productReference = 22566303308CFC5A009433C9 /* Crate.app */;
@@ -101,7 +101,7 @@
 			mainGroup = 225662FA308CFC5A009433C9;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				2256631B308CFC5B009433C9 /* XCRemoteSwiftPackageReference "SQLCipher" */,
+				2256631B308CFC5B009433C9 /* XCLocalSwiftPackageReference "Packages/RekordboxKit" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 22566304308CFC5A009433C9 /* Products */;
@@ -339,22 +339,17 @@
 		};
 /* End XCConfigurationList section */
 
-/* Begin XCRemoteSwiftPackageReference section */
-		2256631B308CFC5B009433C9 /* XCRemoteSwiftPackageReference "SQLCipher" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/sqlcipher/SQLCipher.swift";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 4.19.0;
-			};
+/* Begin XCLocalSwiftPackageReference section */
+		2256631B308CFC5B009433C9 /* XCLocalSwiftPackageReference "Packages/RekordboxKit" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/RekordboxKit;
 		};
-/* End XCRemoteSwiftPackageReference section */
+/* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
-		2256631C308CFC5B009433C9 /* SQLCipher */ = {
+		2256631C308CFC5B009433C9 /* RekordboxKit */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 2256631B308CFC5B009433C9 /* XCRemoteSwiftPackageReference "SQLCipher" */;
-			productName = SQLCipher;
+			productName = RekordboxKit;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

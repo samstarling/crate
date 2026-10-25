@@ -1,3 +1,4 @@
+import RekordboxKit
 import SwiftUI
 
 struct SidebarView: View {

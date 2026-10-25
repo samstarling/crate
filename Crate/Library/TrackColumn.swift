@@ -1,4 +1,5 @@
 import AppKit
+import RekordboxKit
 
 /// A column of the track list: its header, size, how it draws a track and how it sorts.
 struct TrackColumn {
