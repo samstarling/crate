@@ -16,6 +16,7 @@ enum SidebarItem: Hashable {
 struct ContentView: View {
     @Environment(LibraryModel.self) private var model
     @Environment(PlayerModel.self) private var player
+    @Environment(\.undoManager) private var undoManager
     @State private var selection: SidebarItem? = .collection
 
     var body: some View {
@@ -41,6 +42,8 @@ struct ContentView: View {
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) { PlayerBar() }
+        .onAppear { model.undoManager = undoManager }
+        .onChange(of: undoManager) { model.undoManager = undoManager }
         .frame(minWidth: 900, minHeight: 500)
         .alert(
             "Couldn't open library",

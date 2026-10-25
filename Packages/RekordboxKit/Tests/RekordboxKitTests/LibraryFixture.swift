@@ -64,6 +64,26 @@ final class LibraryFixture {
         return result
     }
 
+    /// Every row of every table, without the columns an edit or revert always refreshes
+    /// (`rb_local_usn`, `updated_at`) and without the update counter, so two states of the library
+    /// can be compared for what actually matters.
+    func contents() throws -> [String: Set<[String: SQLiteDatabase.Value]>] {
+        var tables: [String] = []
+        try database.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name != 'agentRegistry'") { tables.append($0.string(0)!) }
+        var contents: [String: Set<[String: SQLiteDatabase.Value]>] = [:]
+        for table in tables {
+            var rows = Set<[String: SQLiteDatabase.Value]>()
+            try database.query("SELECT * FROM \(table)") { row in
+                var values = row.values()
+                values["rb_local_usn"] = nil
+                values["updated_at"] = nil
+                rows.insert(values)
+            }
+            contents[table] = rows
+        }
+        return contents
+    }
+
     /// The content IDs in an ordered list, by `TrackNo`, with their positions.
     func entries(_ table: String, list column: String, id: String) throws -> [String] {
         var entries: [String] = []

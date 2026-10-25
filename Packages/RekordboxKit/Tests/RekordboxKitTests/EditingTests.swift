@@ -66,12 +66,12 @@ struct EditingTests {
     @Test func editsReturnTheNewUpdateCount() throws {
         let afterColour = try RekordboxLibrary.saveColor(
             nil, forTrackIDs: [LibraryFixture.nightDrive], in: fixture.folder, expectedUpdateCount: LibraryFixture.initialUpdateCount
-        )
+        ).updateCount
         #expect(afterColour == LibraryFixture.initialUpdateCount + 1)
         // Crate's own edit doesn't count as a conflict for the next one.
         let afterRemoval = try RekordboxLibrary.removeTracks(
             withIDs: [LibraryFixture.copperSun], in: fixture.folder, expectedUpdateCount: afterColour
-        )
+        ).updateCount
         #expect(try afterRemoval == updateCount)
     }
 
@@ -154,8 +154,10 @@ struct EditingTests {
 
     @Test func renumberedRowsGetFreshUpdateNumbers() throws {
         try RekordboxLibrary.removeTracks(withIDs: [LibraryFixture.nightDrive], in: fixture.folder, expectedUpdateCount: LibraryFixture.initialUpdateCount)
-        // Gaps closed: Warm-up (1), Peak (1, nothing after it), history (2). My Tags aren't numbered.
-        #expect(try updateCount == LibraryFixture.initialUpdateCount + 4)
+        // One update number per gap that moved anything: Warm-up (Soft Machines moves up) and the
+        // history (Soft Machines moves up past the first Night Drive). Night Drive was last in Peak
+        // and last in the history, so nothing follows those gaps, and My Tags aren't numbered.
+        #expect(try updateCount == LibraryFixture.initialUpdateCount + 2)
         #expect(try fixture.count("SELECT rb_local_usn FROM djmdSongPlaylist WHERE ID = 'sp2'") > LibraryFixture.initialUpdateCount)
         // Rows before the removed track weren't touched.
         #expect(try fixture.count("SELECT count(*) FROM djmdSongPlaylist WHERE ID = 'sp0' AND rb_local_usn IS NULL") == 1)

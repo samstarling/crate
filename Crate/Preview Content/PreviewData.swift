@@ -100,12 +100,31 @@ extension Waveform {
     }
 }
 
+extension JournalEntry {
+    static let previews: [JournalEntry] = {
+        let location = RekordboxLibrary.preview.location
+        var reverted = JournalEntry(summary: "Setting 2 tracks to Wonky", libraryLocation: location, changes: .none, date: .now.addingTimeInterval(-86_400))
+        reverted.revertedAt = .now.addingTimeInterval(-80_000)
+        return [
+            JournalEntry(
+                summary: "Removing \u{201C}Unmastered Demo\u{201D}", libraryLocation: location, changes: .none,
+                trashedFiles: [TrashedFile(original: URL(filePath: "/Music/Demo.mp3"), inTrash: URL(filePath: "/Users/me/.Trash/Demo.mp3"))],
+                date: .now.addingTimeInterval(-300)
+            ),
+            JournalEntry(summary: "Clearing the colour of a track", libraryLocation: location, changes: .none, date: .now.addingTimeInterval(-3_600)),
+            reverted,
+        ]
+    }()
+}
+
 /// Supplies a sample library and a paused player: `#Preview(traits: .sampleData)`.
 struct SampleData: PreviewModifier {
     static func makeSharedContext() async throws -> (LibraryModel, PlayerModel) {
         let track = Track.previews[0]
         let player = PlayerModel.preview(track, waveform: .preview(duration: track.duration, bpm: track.bpm), at: 74)
-        return (LibraryModel(library: .preview), player)
+        // A journal in a temporary folder, so previews never read or write the real one.
+        let journal = Journal(directory: FileManager.default.temporaryDirectory.appending(path: "CratePreviewJournal"))
+        return (LibraryModel(library: .preview, history: JournalEntry.previews, journal: journal), player)
     }
 
     func body(content: Content, context: (LibraryModel, PlayerModel)) -> some View {

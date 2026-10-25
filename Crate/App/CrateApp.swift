@@ -26,6 +26,8 @@ struct CrateApp: App {
                 Button("Reload Library") { Task { await model.reload() } }
                     .keyboardShortcut("r")
                     .disabled(model.library == nil || model.isLoading)
+                Divider()
+                ChangeHistoryButton()
             }
             CommandMenu("Controls") {
                 Button(player.isPlaying ? "Pause" : "Play") { player.togglePlayPause() }
@@ -33,5 +35,11 @@ struct CrateApp: App {
                     .disabled(player.track == nil)
             }
         }
+
+        Window("Change History", id: ChangeHistoryView.windowID) {
+            ChangeHistoryView()
+                .environment(model)
+        }
+        .defaultSize(width: 520, height: 440)
     }
 }
