@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Sparkle reads the newest release's appcast; GitHub redirects latest/download to it. -->
+	<key>SUFeedURL</key>
+	<string>https://github.com/samstarling/crate/releases/latest/download/appcast.xml</string>
+	<!-- Public half of the EdDSA key that signs updates (the private half is the SPARKLE_PRIVATE_KEY secret). -->
+	<key>SUPublicEDKey</key>
+	<string>llG03icORfxtTkBNMxbfw0VDLXQkBXF4jljQ+Lhncdc=</string>
+</dict>
+</plist>
