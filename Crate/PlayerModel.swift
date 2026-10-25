@@ -7,6 +7,8 @@ final class PlayerModel {
     private(set) var isPlaying = false
     /// Playback position in seconds.
     private(set) var currentTime: Double = 0
+    /// The playing track's waveform, once loaded; `nil` while loading or if it hasn't been analysed.
+    private(set) var waveform: Waveform?
     var errorMessage: String?
 
     @ObservationIgnored private let player = AVPlayer()
@@ -40,6 +42,15 @@ final class PlayerModel {
         }
         self.track = track
         currentTime = 0
+        waveform = nil
+        if let analysisURL = track.analysisURL {
+            Task {
+                let waveform = await Task.detached(priority: .userInitiated) { try? Waveform.load(from: analysisURL) }.value
+                if self.track?.id == track.id {
+                    self.waveform = waveform
+                }
+            }
+        }
         player.replaceCurrentItem(with: AVPlayerItem(url: track.fileURL))
         player.play()
         isPlaying = true

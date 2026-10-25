@@ -44,7 +44,8 @@ nonisolated struct RekordboxLibrary: Sendable {
 
         let database = try SQLiteDatabase(url: scratch.appending(path: "master.db"), key: databaseKey)
         let colors = try loadColors(from: database)
-        let tracks = try loadTracks(from: database, colors: colors, artworkRoot: folder.appending(path: "share"))
+        let memoryCues = try loadMemoryCues(from: database)
+        let tracks = try loadTracks(from: database, colors: colors, memoryCues: memoryCues, shareRoot: folder.appending(path: "share"))
         let playlists = try loadPlaylists(from: database)
 
         return RekordboxLibrary(
@@ -85,7 +86,7 @@ nonisolated struct RekordboxLibrary: Sendable {
         return Dictionary(uniqueKeysWithValues: [
             text(\.title), text(\.artist), text(\.album), text(\.genre), text(\.label), text(\.key),
             number(\.dateAdded), number(\.bpm), number(\.duration), number(\.rating), number(\.year),
-            number(\.playCount), number(\.colorSortKey),
+            number(\.playCount), number(\.colorSortKey), number(\.memoryCueCount),
         ])
     }
 
@@ -98,12 +99,28 @@ nonisolated struct RekordboxLibrary: Sendable {
         return colors
     }
 
-    private static func loadTracks(from database: SQLiteDatabase, colors: [Int: TrackColor], artworkRoot: URL) throws -> [Track] {
+    private static func loadMemoryCues(from database: SQLiteDatabase) throws -> [Track.ID: [Double]] {
+        var cues: [Track.ID: [Double]] = [:]
+        // Kind 0 is a memory cue; 1–8 are hot cues A–H.
+        try database.query("""
+            SELECT ContentID, InMsec FROM djmdCue
+            WHERE rb_local_deleted = 0 AND Kind = 0
+            ORDER BY ContentID, InMsec
+            """) { row in
+            guard let id = row.string(0) else { return }
+            cues[id, default: []].append(Double(row.int(1)) / 1000)
+        }
+        return cues
+    }
+
+    private static func loadTracks(
+        from database: SQLiteDatabase, colors: [Int: TrackColor], memoryCues: [Track.ID: [Double]], shareRoot: URL
+    ) throws -> [Track] {
         var tracks: [Track] = []
         try database.query("""
             SELECT c.ID, c.Title, a.Name, al.Name, g.Name, l.Name, k.ScaleName, c.BPM, c.Length,
                    c.Rating, c.ReleaseYear, c.DateCreated, c.DJPlayCount, c.ColorID, c.Commnt,
-                   c.FolderPath, c.ImagePath
+                   c.FolderPath, c.ImagePath, c.AnalysisDataPath
             FROM djmdContent c
             LEFT JOIN djmdArtist a ON a.ID = c.ArtistID
             LEFT JOIN djmdAlbum al ON al.ID = c.AlbumID
@@ -112,9 +129,12 @@ nonisolated struct RekordboxLibrary: Sendable {
             LEFT JOIN djmdKey k ON k.ID = c.KeyID
             WHERE c.rb_local_deleted = 0
             """) { row in
+            let id = row.string(0) ?? ""
             let imagePath = row.string(16) ?? ""
+            // The colour waveform lives alongside the .DAT file Rekordbox points at, in the .EXT file.
+            let analysisPath = row.string(17) ?? ""
             tracks.append(Track(
-                id: row.string(0) ?? "",
+                id: id,
                 libraryIndex: tracks.count,
                 title: row.string(1) ?? "",
                 artist: row.string(2) ?? "",
@@ -131,7 +151,9 @@ nonisolated struct RekordboxLibrary: Sendable {
                 color: colors[Int(row.string(13) ?? "") ?? 0],
                 comment: row.string(14) ?? "",
                 fileURL: URL(filePath: row.string(15) ?? ""),
-                artworkURL: imagePath.isEmpty ? nil : artworkRoot.appending(path: imagePath)
+                artworkURL: imagePath.isEmpty ? nil : shareRoot.appending(path: imagePath),
+                analysisURL: analysisPath.isEmpty ? nil : shareRoot.appending(path: analysisPath).deletingPathExtension().appendingPathExtension("EXT"),
+                memoryCues: memoryCues[id] ?? []
             ))
         }
         return tracks

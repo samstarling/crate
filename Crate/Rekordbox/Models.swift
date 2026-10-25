@@ -25,6 +25,12 @@ nonisolated struct Track: Identifiable, Hashable, Sendable {
     let comment: String
     let fileURL: URL
     let artworkURL: URL?
+    /// The track's `ANLZ0000.EXT` analysis file, which holds its colour waveform.
+    let analysisURL: URL?
+    /// Memory cue positions in seconds, in order. (Hot cues aren't included.)
+    let memoryCues: [Double]
+
+    var memoryCueCount: Int { memoryCues.count }
 
     /// Orders tracks by colour in Rekordbox's order, with uncoloured tracks last.
     var colorSortKey: Int { color?.id ?? .max }
