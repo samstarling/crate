@@ -51,6 +51,17 @@ struct ContentView: View {
             Text(model.errorMessage ?? "")
         }
         .alert(
+            "Your Library Has Changed",
+            isPresented: Binding(get: { model.conflictedEdit != nil }, set: { if !$0 { model.conflictedEdit = nil } }),
+            presenting: model.conflictedEdit
+        ) { edit in
+            Button("Reload and Apply") { Task { await model.reloadAndApply(edit) } }
+            Button("Reload Without Applying") { Task { await model.reload() } }
+            Button("Cancel", role: .cancel) {}
+        } message: { edit in
+            Text("\(edit.summary) wasn\u{2019}t saved, because your Rekordbox library has changed since Crate loaded it, probably in Rekordbox. Crate can reload the library and then apply your change.")
+        }
+        .alert(
             "Couldn't play track",
             isPresented: Binding(get: { player.errorMessage != nil }, set: { if !$0 { player.errorMessage = nil } })
         ) {

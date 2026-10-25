@@ -10,18 +10,29 @@ public struct RekordboxLibrary: Sendable {
     public let colors: [TrackColor]
     /// My Tag names by ID (not including the folders that group them).
     public let myTags: [String: String]
+    /// Rekordbox's `localUpdateCount` when this snapshot was taken. Rekordbox increments it with
+    /// every local edit, so if it has changed, someone else has edited the library since.
+    public private(set) var updateCount: Int?
     /// For each sortable key path, every track's rank (indexed by `Track.libraryIndex`) in ascending
     /// order. Equal values share a rank. Computed once at load so sorting is just integer comparisons.
     /// (Key path literals capture nothing, so sharing them across threads is safe.)
     nonisolated(unsafe) private(set) var sortRanks: [PartialKeyPath<Track>: [Int]]
 
-    public init(location: URL, tracks: [Track], playlists: [Playlist], colors: [TrackColor], myTags: [String: String] = [:]) {
+    public init(
+        location: URL,
+        tracks: [Track],
+        playlists: [Playlist],
+        colors: [TrackColor],
+        myTags: [String: String] = [:],
+        updateCount: Int? = nil
+    ) {
         self.location = location
         self.tracks = tracks
         self.tracksByID = Dictionary(tracks.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         self.playlists = playlists
         self.colors = colors
         self.myTags = myTags
+        self.updateCount = updateCount
         self.sortRanks = Self.sortRanks(for: tracks)
     }
 
@@ -68,7 +79,8 @@ public struct RekordboxLibrary: Sendable {
             tracks: tracks,
             playlists: playlists,
             colors: colors.values.sorted { $0.id < $1.id },
-            myTags: try loadMyTags(from: database)
+            myTags: try loadMyTags(from: database),
+            updateCount: try readUpdateCount(from: database)
         )
     }
 
@@ -265,8 +277,13 @@ public struct RekordboxLibrary: Sendable {
     // MARK: Editing
 
     /// Writes a new colour (or none) for the given tracks to `master.db` in `folder`.
-    public static func saveColor(_ color: TrackColor?, forTrackIDs ids: [Track.ID], in folder: URL) throws {
-        try edit(in: folder) { database, nextUpdateCount, now in
+    /// - Returns: The library's new update count.
+    /// - Throws: `LibraryChanged` if the library's update count isn't `expectedUpdateCount`.
+    @discardableResult
+    public static func saveColor(
+        _ color: TrackColor?, forTrackIDs ids: [Track.ID], in folder: URL, expectedUpdateCount: Int?
+    ) throws -> Int {
+        try edit(in: folder, expectedUpdateCount: expectedUpdateCount) { database, nextUpdateCount, now in
             for id in ids {
                 try database.execute(
                     "UPDATE djmdContent SET ColorID = ?, rb_local_usn = ?, updated_at = ? WHERE ID = ?",
@@ -307,8 +324,11 @@ public struct RekordboxLibrary: Sendable {
     /// This mirrors what Rekordbox does: rows are deleted rather than marked deleted, and later
     /// tracks in each list are renumbered. The audio files and Rekordbox's analysis files are left
     /// on disk.
-    public static func removeTracks(withIDs ids: [Track.ID], in folder: URL) throws {
-        try edit(in: folder) { database, nextUpdateCount, now in
+    /// - Returns: The library's new update count.
+    /// - Throws: `LibraryChanged` if the library's update count isn't `expectedUpdateCount`.
+    @discardableResult
+    public static func removeTracks(withIDs ids: [Track.ID], in folder: URL, expectedUpdateCount: Int?) throws -> Int {
+        try edit(in: folder, expectedUpdateCount: expectedUpdateCount) { database, nextUpdateCount, now in
             for id in ids {
                 for (table, list) in orderedTrackTables {
                     var positions: [(list: String, trackNo: Int)] = []
@@ -335,25 +355,41 @@ public struct RekordboxLibrary: Sendable {
         }
     }
 
+    /// Thrown when an edit is refused because the library has changed since the caller loaded it,
+    /// for example in Rekordbox, so the edit may be based on out-of-date information.
+    public struct LibraryChanged: LocalizedError {
+        public let expectedUpdateCount: Int?
+        public let actualUpdateCount: Int
+
+        public var errorDescription: String? {
+            "Your Rekordbox library has changed since Crate loaded it, so Crate didn\u{2019}t save, to avoid overwriting those changes."
+        }
+    }
+
     /// Runs `body` in a transaction on `master.db`, tracking changes the way Rekordbox does.
+    ///
+    /// The transaction holds SQLite's write lock from the start, so nothing can change the library
+    /// between checking `expectedUpdateCount` and writing.
     ///
     /// Each edited row should get a fresh `rb_local_usn` from `nextUpdateCount()`, which advances
     /// Rekordbox's `localUpdateCount` counter, and `now` as its `updated_at`, so Rekordbox sees the
     /// change as a local edit. Rekordbox must not be running, or it may overwrite the change.
+    ///
+    /// - Returns: The new update count.
     private static func edit(
         in folder: URL,
+        expectedUpdateCount: Int?,
         _ body: (SQLiteDatabase, _ nextUpdateCount: () -> Int, _ now: String) throws -> Void
-    ) throws {
+    ) throws -> Int {
         let database = try SQLiteDatabase(url: folder.appending(path: "master.db"), key: databaseKey, access: .readWrite)
         let now = timestampFormatter.string(from: .now)
 
-        try database.transaction {
-            var updateCount: Int?
-            try database.query("SELECT int_1 FROM agentRegistry WHERE registry_id = 'localUpdateCount'") { row in
-                updateCount = row.int(0)
-            }
-            guard var updateCount else {
+        return try database.transaction {
+            guard var updateCount = try readUpdateCount(from: database) else {
                 throw SQLiteDatabase.Error(message: "This library has no update counter, so Crate can't safely edit it.")
+            }
+            guard updateCount == expectedUpdateCount else {
+                throw LibraryChanged(expectedUpdateCount: expectedUpdateCount, actualUpdateCount: updateCount)
             }
 
             try body(database, {
@@ -365,7 +401,16 @@ public struct RekordboxLibrary: Sendable {
                 "UPDATE agentRegistry SET int_1 = ?, updated_at = ? WHERE registry_id = 'localUpdateCount'",
                 [.int(updateCount), .text(now)]
             )
+            return updateCount
         }
+    }
+
+    private static func readUpdateCount(from database: SQLiteDatabase) throws -> Int? {
+        var updateCount: Int?
+        try database.query("SELECT int_1 FROM agentRegistry WHERE registry_id = 'localUpdateCount'") { row in
+            updateCount = row.int(0)
+        }
+        return updateCount
     }
 
     /// Rekordbox's timestamp format, e.g. `2026-07-11 23:11:07.856 +00:00`.
@@ -377,8 +422,9 @@ public struct RekordboxLibrary: Sendable {
         return formatter
     }()
 
-    /// Updates this in-memory snapshot after a successful `saveColor`.
-    public mutating func applyColor(_ color: TrackColor?, toTrackIDs ids: [Track.ID]) {
+    /// Updates this in-memory snapshot after a successful `saveColor`, which returned `updateCount`.
+    public mutating func applyColor(_ color: TrackColor?, toTrackIDs ids: [Track.ID], updateCount: Int) {
+        self.updateCount = updateCount
         for id in ids {
             guard var track = tracksByID[id] else { continue }
             track.color = color

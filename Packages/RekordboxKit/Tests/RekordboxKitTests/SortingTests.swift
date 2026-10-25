@@ -42,7 +42,7 @@ struct SortingTests {
     @Test func applyingAColourUpdatesItsRanks() {
         var library = library
         // Uncoloured tracks sort last; give Copper Sun the first colour.
-        library.applyColor(library.colors[0], toTrackIDs: [LibraryFixture.copperSun])
+        library.applyColor(library.colors[0], toTrackIDs: [LibraryFixture.copperSun], updateCount: 101)
         #expect(library.tracksByID[LibraryFixture.copperSun]?.color?.name == "Rhythmic")
         #expect(library.sorted(library.tracks, by: KeyPathComparator(\.colorSortKey)).map(\.id)
             == [LibraryFixture.copperSun, LibraryFixture.nightDrive, LibraryFixture.softMachines])
