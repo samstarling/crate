@@ -69,11 +69,17 @@ struct ContentView: View {
                     TrackTable(title: playlist.name, tracks: library.tracks(in: playlist), library: library)
                         .id(playlist.id)
                 case .smart:
-                    ContentUnavailableView(
-                        "Smart Playlists Aren't Supported Yet",
-                        systemImage: "gearshape",
-                        description: Text("Rekordbox stores \u{201C}\(playlist.name)\u{201D} as a set of rules rather than a list of tracks.")
-                    )
+                    switch Result(catching: { try library.smartTracks(in: playlist) }) {
+                    case .success(let tracks):
+                        TrackTable(title: playlist.name, tracks: tracks, library: library)
+                            .id(playlist.id)
+                    case .failure(let error):
+                        ContentUnavailableView(
+                            "Can\u{2019}t Show \u{201C}\(playlist.name)\u{201D}",
+                            systemImage: "gearshape",
+                            description: Text(error.localizedDescription)
+                        )
+                    }
                 case .folder:
                     ContentUnavailableView(playlist.name, systemImage: "folder", description: Text("Select a playlist."))
                 }

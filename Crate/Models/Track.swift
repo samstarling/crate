@@ -29,6 +29,8 @@ nonisolated struct Track: Identifiable, Hashable, Sendable {
     let analysisURL: URL?
     /// Memory cue positions in seconds, in order. (Hot cues aren't included.)
     let memoryCues: [Double]
+    /// IDs of the My Tags applied to this track.
+    let myTagIDs: [String]
 
     var memoryCueCount: Int { memoryCues.count }
 

@@ -11,6 +11,8 @@ nonisolated struct Playlist: Identifiable, Hashable, Sendable {
     /// `nil` for anything that isn't a folder, so `List(children:)` doesn't draw a disclosure triangle.
     var children: [Playlist]?
     var trackIDs: [String]
+    /// The rules for a smart playlist; `nil` otherwise, or if they couldn't be read.
+    var smartRule: SmartRule? = nil
 
     var systemImage: String {
         switch kind {

@@ -39,7 +39,8 @@ extension Track {
             fileURL: URL(filePath: "/Music/\(artist)/\(title).mp3"),
             artworkURL: nil,
             analysisURL: nil,
-            memoryCues: cues
+            memoryCues: cues,
+            myTagIDs: []
         )
     }
 }
@@ -54,7 +55,14 @@ extension RekordboxLibrary {
                 Playlist(id: "peak", name: "Peak Time", kind: .playlist, children: nil, trackIDs: [ids[3], ids[2]]),
             ], trackIDs: []),
             Playlist(id: "smart", name: "Smart", kind: .folder, children: [
-                Playlist(id: "unrated", name: "Unrated", kind: .smart, children: nil, trackIDs: []),
+                Playlist(
+                    id: "unrated", name: "Unrated", kind: .smart, children: nil, trackIDs: [],
+                    smartRule: SmartRule(xml: #"<NODE LogicalOperator="1"><CONDITION PropertyName="rating" Operator="1" ValueUnit="" ValueLeft="0" ValueRight=""/></NODE>"#)
+                ),
+                Playlist(
+                    id: "old-tag", name: "Old Tag", kind: .smart, children: nil, trackIDs: [],
+                    smartRule: SmartRule(xml: #"<NODE LogicalOperator="1"><CONDITION PropertyName="myTag" Operator="8" ValueUnit="" ValueLeft="28" ValueRight=""/></NODE>"#)
+                ),
             ], trackIDs: []),
         ]
         return RekordboxLibrary(

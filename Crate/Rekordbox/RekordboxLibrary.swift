@@ -8,17 +8,20 @@ nonisolated struct RekordboxLibrary: Sendable {
     let playlists: [Playlist]
     /// The eight track colours, in Rekordbox's order.
     let colors: [TrackColor]
+    /// My Tag names by ID (not including the folders that group them).
+    let myTags: [String: String]
     /// For each sortable key path, every track's rank (indexed by `Track.libraryIndex`) in ascending
     /// order. Equal values share a rank. Computed once at load so sorting is just integer comparisons.
     /// (Key path literals capture nothing, so sharing them across threads is safe.)
     nonisolated(unsafe) private(set) var sortRanks: [PartialKeyPath<Track>: [Int]]
 
-    init(location: URL, tracks: [Track], playlists: [Playlist], colors: [TrackColor]) {
+    init(location: URL, tracks: [Track], playlists: [Playlist], colors: [TrackColor], myTags: [String: String] = [:]) {
         self.location = location
         self.tracks = tracks
         self.tracksByID = Dictionary(tracks.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         self.playlists = playlists
         self.colors = colors
+        self.myTags = myTags
         self.sortRanks = Self.sortRanks(for: tracks)
     }
 
@@ -54,14 +57,18 @@ nonisolated struct RekordboxLibrary: Sendable {
         let database = try SQLiteDatabase(url: scratch.appending(path: "master.db"), key: databaseKey)
         let colors = try loadColors(from: database)
         let memoryCues = try loadMemoryCues(from: database)
-        let tracks = try loadTracks(from: database, colors: colors, memoryCues: memoryCues, shareRoot: folder.appending(path: "share"))
+        let trackTags = try loadTrackTags(from: database)
+        let tracks = try loadTracks(
+            from: database, colors: colors, memoryCues: memoryCues, trackTags: trackTags, shareRoot: folder.appending(path: "share")
+        )
         let playlists = try loadPlaylists(from: database)
 
         return RekordboxLibrary(
             location: folder,
             tracks: tracks,
             playlists: playlists,
-            colors: colors.values.sorted { $0.id < $1.id }
+            colors: colors.values.sorted { $0.id < $1.id },
+            myTags: try loadMyTags(from: database)
         )
     }
 
@@ -120,8 +127,31 @@ nonisolated struct RekordboxLibrary: Sendable {
         return cues
     }
 
+    private static func loadMyTags(from database: SQLiteDatabase) throws -> [String: String] {
+        var tags: [String: String] = [:]
+        // Attribute 1 rows are the folders tags are grouped into.
+        try database.query("SELECT ID, Name FROM djmdMyTag WHERE rb_local_deleted = 0 AND Attribute = 0") { row in
+            guard let id = row.string(0) else { return }
+            tags[id] = row.string(1) ?? ""
+        }
+        return tags
+    }
+
+    private static func loadTrackTags(from database: SQLiteDatabase) throws -> [Track.ID: [String]] {
+        var tags: [Track.ID: [String]] = [:]
+        try database.query("SELECT ContentID, MyTagID FROM djmdSongMyTag WHERE rb_local_deleted = 0") { row in
+            guard let trackID = row.string(0), let tagID = row.string(1) else { return }
+            tags[trackID, default: []].append(tagID)
+        }
+        return tags
+    }
+
     private static func loadTracks(
-        from database: SQLiteDatabase, colors: [Int: TrackColor], memoryCues: [Track.ID: [Double]], shareRoot: URL
+        from database: SQLiteDatabase,
+        colors: [Int: TrackColor],
+        memoryCues: [Track.ID: [Double]],
+        trackTags: [Track.ID: [String]],
+        shareRoot: URL
     ) throws -> [Track] {
         var tracks: [Track] = []
         try database.query("""
@@ -160,7 +190,8 @@ nonisolated struct RekordboxLibrary: Sendable {
                 fileURL: URL(filePath: row.string(15) ?? ""),
                 artworkURL: imagePath.isEmpty ? nil : shareRoot.appending(path: imagePath),
                 analysisURL: analysisPath.isEmpty ? nil : shareRoot.appending(path: analysisPath).deletingPathExtension().appendingPathExtension("EXT"),
-                memoryCues: memoryCues[id] ?? []
+                memoryCues: memoryCues[id] ?? [],
+                myTagIDs: trackTags[id] ?? []
             ))
         }
         return tracks
@@ -179,7 +210,7 @@ nonisolated struct RekordboxLibrary: Sendable {
 
         var childrenByParent: [String: [(seq: Int, playlist: Playlist)]] = [:]
         try database.query("""
-            SELECT ID, Name, Attribute, ParentID, Seq FROM djmdPlaylist
+            SELECT ID, Name, Attribute, ParentID, Seq, SmartList FROM djmdPlaylist
             WHERE rb_local_deleted = 0
             """) { row in
             let id = row.string(0) ?? ""
@@ -188,7 +219,14 @@ nonisolated struct RekordboxLibrary: Sendable {
             case 4: .smart
             default: .playlist
             }
-            let playlist = Playlist(id: id, name: row.string(1) ?? "", kind: kind, children: nil, trackIDs: trackIDs[id] ?? [])
+            let playlist = Playlist(
+                id: id,
+                name: row.string(1) ?? "",
+                kind: kind,
+                children: nil,
+                trackIDs: trackIDs[id] ?? [],
+                smartRule: kind == .smart ? row.string(5).flatMap(SmartRule.init(xml:)) : nil
+            )
             childrenByParent[row.string(3) ?? "root", default: []].append((row.int(4), playlist))
         }
 
@@ -204,6 +242,15 @@ nonisolated struct RekordboxLibrary: Sendable {
                 }
         }
         return children(of: "root")
+    }
+
+    /// The tracks a smart playlist's rules match, in collection order. Throws `SmartRule.Unsupported`
+    /// if the rules use something Crate can't evaluate yet.
+    func smartTracks(in playlist: Playlist, now: Date = .now) throws -> [Track] {
+        guard let rule = playlist.smartRule else {
+            throw SmartRule.Unsupported(reason: "Crate couldn\u{2019}t read this smart playlist\u{2019}s rules.")
+        }
+        return tracks.filter(try rule.predicate(myTags: myTags, now: now))
     }
 
     func tracks(in playlist: Playlist) -> [Track] {
