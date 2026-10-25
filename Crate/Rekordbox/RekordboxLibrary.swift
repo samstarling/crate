@@ -126,7 +126,7 @@ nonisolated struct RekordboxLibrary: Sendable {
         var tracks: [Track] = []
         try database.query("""
             SELECT c.ID, c.Title, a.Name, al.Name, g.Name, l.Name, k.ScaleName, c.BPM, c.Length,
-                   c.Rating, c.ReleaseYear, c.DateCreated, c.DJPlayCount, c.ColorID, c.Commnt,
+                   c.Rating, c.ReleaseYear, c.StockDate, c.DJPlayCount, c.ColorID, c.Commnt,
                    c.FolderPath, c.ImagePath, c.AnalysisDataPath
             FROM djmdContent c
             LEFT JOIN djmdArtist a ON a.ID = c.ArtistID

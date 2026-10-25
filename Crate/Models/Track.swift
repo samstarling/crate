@@ -18,7 +18,7 @@ nonisolated struct Track: Identifiable, Hashable, Sendable {
     let rating: Int
     /// 0 when unknown.
     let year: Int
-    /// `yyyy-MM-dd`, as stored by Rekordbox, so it sorts correctly as a string.
+    /// When the track was added to the collection (`StockDate`), as `yyyy-MM-dd` so it sorts as a string.
     let dateAdded: String
     let playCount: Int
     var color: TrackColor?
