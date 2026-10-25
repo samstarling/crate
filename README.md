@@ -9,7 +9,7 @@ Crate reads your Rekordbox 6 or 7 library directly from its database. You can br
 1. Download the latest `Crate-x.y.z.dmg` from [Releases](../../releases).
 2. Open it and drag **Crate** into **Applications**.
 
-Crate is signed and notarized by Apple, so it opens like any other app. It needs macOS 15.6 or later.
+Crate is signed and notarized by Apple, so it opens like any other app. It checks for updates itself, and you can also choose **Crate → Check for Updates…**. It needs macOS 15.6 or later.
 
 ## Your library is safe, but read this
 
@@ -61,6 +61,9 @@ Releases are automated with [semantic-release](https://github.com/semantic-relea
 1. The version is worked out from the commits since the last release, then tagged.
 2. A GitHub Release is created with notes generated from those commits.
 3. CI builds the app, signs it with Developer ID, notarizes and staples it, and attaches a `.dmg` and a `.zip`.
+4. CI signs the zip for [Sparkle](https://sparkle-project.org) and attaches an `appcast.xml`. Installed copies of Crate check `releases/latest/download/appcast.xml`, so they find the new version automatically.
+
+Updates are signed with an EdDSA key. The public half is in `Config/Info.plist`, and the private half is in the `SPARKLE_PRIVATE_KEY` secret and the maintainer's keychain. If that key is lost, existing installs can't verify new updates, so keep a backup.
 
 The rules protecting `main` live in `.github/rulesets/main.json`. GitHub doesn't read that file automatically, so after changing it, re-apply it with:
 
@@ -70,6 +73,6 @@ gh api -X PUT repos/samstarling/crate/rulesets/$(gh api repos/samstarling/crate/
 
 ## Licence
 
-[MIT](LICENSE). Crate uses [SQLCipher](https://www.zetetic.net/sqlcipher/) (BSD licence). The acknowledgements are in the app's About window.
+[MIT](LICENSE). Crate uses [SQLCipher](https://www.zetetic.net/sqlcipher/) (BSD licence) and [Sparkle](https://sparkle-project.org) (MIT licence). The acknowledgements are in the app's About window.
 
 Crate isn't affiliated with or endorsed by AlphaTheta or Pioneer DJ. Rekordbox is a trademark of AlphaTheta Corporation.

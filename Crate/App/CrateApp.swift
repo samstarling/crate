@@ -5,12 +5,14 @@
 //  Created by Sam Starling on 24/10/2026.
 //
 
+import Sparkle
 import SwiftUI
 
 @main
 struct CrateApp: App {
     @State private var model = LibraryModel()
     @State private var player = PlayerModel()
+    private let updater = Updater()
 
     var body: some Scene {
         Window("Crate", id: "main") {
@@ -20,6 +22,9 @@ struct CrateApp: App {
                 .environment(player)
         }
         .commands {
+            CommandGroup(after: .appInfo) {
+                CheckForUpdatesButton(updater: updater)
+            }
             CommandGroup(replacing: .newItem) {
                 Button("Open Library…") { Task { await model.showOpenPanel() } }
                     .keyboardShortcut("o")

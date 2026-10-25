@@ -3,6 +3,9 @@
 
 DEVELOPMENT_TEAM = WDE56YCGHE
 ENABLE_HARDENED_RUNTIME = YES
+
+// Merged into the generated Info.plist; holds Sparkle's settings.
+INFOPLIST_FILE = Config/Info.plist
 INFOPLIST_KEY_NSHumanReadableCopyright = Copyright © 2026 Sam Starling. MIT Licence.
 
 // Contributors can override settings (e.g. DEVELOPMENT_TEAM) here without touching the project.
