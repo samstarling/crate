@@ -1,51 +1,34 @@
 {
   "fill": {
     "linear-gradient": [
-      "extended-srgb:0.70000,0.52000,0.32000,1.00000",
-      "extended-srgb:0.80000,0.62000,0.40000,1.00000"
-    ]
+      "extended-srgb:0.22745,0.23922,0.26275,1.00000",
+      "extended-srgb:0.07843,0.08235,0.09412,1.00000"
+    ],
+    "orientation": {
+      "start": {
+        "x": 0.5,
+        "y": 0
+      },
+      "stop": {
+        "x": 0.5,
+        "y": 1
+      }
+    }
   },
   "groups": [
     {
       "layers": [
         {
-          "image-name": "handle.svg",
-          "name": "handle"
-        },
-        {
-          "image-name": "grain.svg",
-          "name": "grain",
-          "opacity": 0.14
-        },
-        {
-          "glass": true,
-          "image-name": "front.svg",
-          "name": "front"
+          "image-name": "wheel.svg",
+          "name": "wheel"
         }
       ],
-      "lighting": "combined",
-      "name": "Front panel",
+      "name": "Jog wheel",
       "shadow": {
-        "kind": "neutral",
-        "opacity": 0.6
+        "kind": "none",
+        "opacity": 0.5
       },
-      "translucency": {
-        "enabled": false,
-        "value": 0.5
-      }
-    },
-    {
-      "layers": [
-        {
-          "image-name": "sleeves.svg",
-          "name": "sleeves"
-        }
-      ],
-      "name": "Records",
-      "shadow": {
-        "kind": "neutral",
-        "opacity": 0.4
-      },
+      "specular": false,
       "translucency": {
         "enabled": false,
         "value": 0.5
