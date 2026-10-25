@@ -32,9 +32,6 @@ public final class LibrarySession {
     @ObservationIgnored private var writeWaiters: [CheckedContinuation<Void, Never>] = []
 
     @ObservationIgnored private let files: FileOperations
-    @ObservationIgnored private var isBackedUp = false
-    /// The most recent write, so the next one can wait for it.
-    @ObservationIgnored private var latestWrite: Task<Void, Never>?
 
     public init(library: RekordboxLibrary, pendingChanges: [StagedChange] = [], appliedChanges: [AppliedChange] = [], files: FileOperations) {
         self.savedLibrary = library
@@ -170,14 +167,7 @@ public final class LibrarySession {
         // aren't being written): undo, redo and reloading all wait. So the steps after this point
         // are exactly the ones taken while writing.
         let stepsBefore = undoSteps.count
-        let (changeSet, trashed): (ChangeSet, [TrashedFile])
-        var report: WriteReport
-        do {
-            (changeSet, trashed, report) = try await write(staged.map(\.change))
-        } catch let error as RekordboxLibrary.LibraryChanged {
-            try? await load()
-            throw error
-        }
+        var (changeSet, trashed, report) = try await write(staged.map(\.change))
         let applied = AppliedChange(
             summary: staged.count == 1 ? staged[0].summary : "\(staged.count) changes",
             items: staged.count == 1 ? [] : staged.map(\.summary),
@@ -232,7 +222,7 @@ public final class LibrarySession {
         guard let index = appliedChanges.firstIndex(where: { $0.id == id }), !appliedChanges[index].isReverted else { return nil }
         let applied = appliedChanges[index]
         let location = location
-        _ = try await serialised { try RekordboxLibrary.revert(applied.changes, in: location) }
+        _ = try await backingUp { try RekordboxLibrary.revert(applied.changes, in: location) }
         let restoreFromTrash = files.restoreFromTrash
         let failures = await Task.detached(priority: .userInitiated) { restoreFromTrash(applied.trashedFiles) }.value
         if let index = appliedChanges.firstIndex(where: { $0.id == id }) {
@@ -276,10 +266,19 @@ public final class LibrarySession {
 
     /// Writes changes to `master.db`, expecting it to be unchanged since it was loaded, then moves
     /// files to the Trash for removals that ask for it.
+    ///
+    /// If the library has changed since it was loaded, nothing is written: the session reloads and
+    /// throws `RekordboxLibrary.LibraryChanged`, so trying again works.
     private func write(_ changes: [PendingChange]) async throws -> (ChangeSet, [TrashedFile], WriteReport) {
         let saved = savedLibrary
-        let changeSet = try await serialised {
-            try RekordboxLibrary.apply(changes, in: saved.location, expectedUpdateCount: saved.updateCount)
+        let changeSet: ChangeSet
+        do {
+            changeSet = try await backingUp {
+                try RekordboxLibrary.apply(changes, in: saved.location, expectedUpdateCount: saved.updateCount)
+            }
+        } catch let error as RekordboxLibrary.LibraryChanged {
+            try? await load()
+            throw error
         }
         let paths = changes.flatMap { change -> [URL] in
             guard case .remove(let ids, true) = change else { return [] }
@@ -400,26 +399,15 @@ public final class LibrarySession {
         return try await body()
     }
 
-    /// Runs `write` against the library, one write at a time, after backing it up the first time.
-    private func serialised<T: Sendable>(_ write: @escaping @Sendable () throws -> T) async throws -> T {
+    /// Runs `write` against the library in the background, after backing the library up (`files`
+    /// backs each library up once per run). Writes never overlap: nothing starts one while
+    /// `isWriting`.
+    private func backingUp<T: Sendable>(_ write: @escaping @Sendable () throws -> T) async throws -> T {
         let location = location
         let backUp = files.backUp
-        let previous = latestWrite
-        let task = Task {
-            await previous?.value
-            // Recorded before backing up, so a queued write doesn't back up again; forgotten if it fails.
-            if !isBackedUp {
-                isBackedUp = true
-                do {
-                    try await Task.detached(priority: .userInitiated) { try backUp(location) }.value
-                } catch {
-                    isBackedUp = false
-                    throw error
-                }
-            }
-            return try await Task.detached(priority: .userInitiated) { try write() }.value
-        }
-        latestWrite = Task { _ = await task.result }
-        return try await task.value
+        return try await Task.detached(priority: .userInitiated) {
+            try backUp(location)
+            return try write()
+        }.value
     }
 }

@@ -8,7 +8,8 @@ import Synchronization
 /// Passed in so tests and previews can use a temporary folder, or do nothing, instead of the real
 /// backups folder and the user's Trash.
 public struct FileOperations: Sendable {
-    /// Backs up the library in a folder, before the first change to it.
+    /// Backs up the library in a folder. Called before every write, so it should only back up the
+    /// first time, as `live` does.
     public var backUp: @Sendable (_ library: URL) throws -> Void
     /// Moves files to the Trash, returning where each went and the names of any that couldn't be moved.
     public var moveToTrash: @Sendable (_ files: [URL]) -> (trashed: [TrashedFile], failures: [String])
@@ -70,7 +71,8 @@ public struct FileOperations: Sendable {
         var attempt = 1
         while fileManager.fileExists(atPath: destination.path) {
             attempt += 1
-            destination = folder.appending(path: "\(timestamp)-\(attempt)", directoryHint: .isDirectory)
+            // Padded so names still sort oldest first.
+            destination = folder.appending(path: "\(timestamp)-\(String(format: "%03d", attempt))", directoryHint: .isDirectory)
         }
         try fileManager.createDirectory(at: destination, withIntermediateDirectories: true)
         for name in ["master.db", "master.db-wal", "master.db-shm"] {
@@ -88,7 +90,8 @@ public struct FileOperations: Sendable {
         }
     }
 
-    /// Moves each file that exists with `move`, which returns where it went.
+    /// Moves each file that exists with `move`, which returns where it went. A file `move` can't say
+    /// the location of counts as a failure, since it can't be put back.
     static func moveFiles(_ files: [URL], with move: (URL) throws -> URL?) -> (trashed: [TrashedFile], failures: [String]) {
         var trashed: [TrashedFile] = []
         var failures: [String] = []
@@ -96,6 +99,8 @@ public struct FileOperations: Sendable {
             do {
                 if let inTrash = try move(file) {
                     trashed.append(TrashedFile(original: file, inTrash: inTrash))
+                } else {
+                    failures.append(file.lastPathComponent)
                 }
             } catch {
                 failures.append(file.lastPathComponent)
@@ -104,11 +109,12 @@ public struct FileOperations: Sendable {
         return (trashed, failures)
     }
 
-    /// Moves files back to where they were, unless something is there already.
+    /// Moves files back to where they were, returning the names of any that couldn't be, including
+    /// any with something else there now.
     static func restore(_ files: [TrashedFile]) -> [String] {
         files.compactMap { file in
             let fileManager = FileManager.default
-            guard !fileManager.fileExists(atPath: file.original.path) else { return nil }
+            guard !fileManager.fileExists(atPath: file.original.path) else { return file.original.lastPathComponent }
             do {
                 try fileManager.createDirectory(at: file.original.deletingLastPathComponent(), withIntermediateDirectories: true)
                 try fileManager.moveItem(at: file.inTrash, to: file.original)

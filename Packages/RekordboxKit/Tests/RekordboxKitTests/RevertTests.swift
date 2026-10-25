@@ -102,14 +102,26 @@ struct RevertTests {
         #expect(try fixture.loadLibrary().tracksByID[LibraryFixture.nightDrive] != nil)
     }
 
-    @Test func aRowChangedSinceBlocksReverting() throws {
+    @Test func aColumnChangedAgainSinceBlocksReverting() throws {
         let changes = try RekordboxLibrary.saveColor(
             nil, forTrackIDs: [LibraryFixture.nightDrive], in: fixture.folder, expectedUpdateCount: LibraryFixture.initialUpdateCount
         )
-        try fixture.database.execute("UPDATE djmdContent SET Rating = 1 WHERE ID = '\(LibraryFixture.nightDrive)'")
+        try fixture.database.execute("UPDATE djmdContent SET ColorID = '1' WHERE ID = '\(LibraryFixture.nightDrive)'")
         #expect(throws: RekordboxLibrary.CannotRevert.self) { try RekordboxLibrary.revert(changes, in: fixture.folder) }
         // Nothing was written.
-        #expect(try fixture.loadLibrary().tracksByID[LibraryFixture.nightDrive]?.color == nil)
+        #expect(try fixture.loadLibrary().tracksByID[LibraryFixture.nightDrive]?.color?.name == "Rhythmic")
+    }
+
+    @Test func otherColumnsChangedSinceAreKeptWhenReverting() throws {
+        let changes = try RekordboxLibrary.saveColor(
+            nil, forTrackIDs: [LibraryFixture.nightDrive], in: fixture.folder, expectedUpdateCount: LibraryFixture.initialUpdateCount
+        )
+        // The track is played in Rekordbox.
+        try fixture.database.execute("UPDATE djmdContent SET DJPlayCount = 6 WHERE ID = '\(LibraryFixture.nightDrive)'")
+        try RekordboxLibrary.revert(changes, in: fixture.folder)
+        let track = try #require(try fixture.loadLibrary().tracksByID[LibraryFixture.nightDrive])
+        #expect(track.color?.name == "Wonky")
+        #expect(track.playCount == 6)
     }
 
     @Test func aListChangedSinceBlocksReverting() throws {

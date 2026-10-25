@@ -160,11 +160,11 @@ extension RekordboxLibrary {
     /// Puts back every row `changes` changed, as it was before, in `master.db` in `folder`.
     ///
     /// Unlike other edits, this doesn't need the whole library to be unchanged since (Rekordbox
-    /// changes it all the time, for example when you play a track). Instead, it checks that every
-    /// row the change touched still holds what the change left in it, and that every list it
-    /// renumbered still has the same tracks in the same places, and throws `CannotRevert` if not.
-    /// Update numbers and timestamps aren't compared, since reverting a later change refreshes them
-    /// without changing anything else. Restored rows get fresh update numbers, so Rekordbox sees
+    /// changes it all the time, for example when you play a track). Instead, it checks that the
+    /// columns the change set still hold what it set them to, that rows it deleted haven't come
+    /// back, and that every list it renumbered still has the same tracks in the same places, and
+    /// throws `CannotRevert` if not. Only those columns are put back, so anything else changed
+    /// since, like a play count, is kept. Restored rows get fresh update numbers, so Rekordbox sees
     /// them as local edits.
     /// - Returns: The library's new update count.
     @discardableResult
@@ -173,7 +173,12 @@ extension RekordboxLibrary {
             for row in changes.rows {
                 var current: [String: SQLiteDatabase.Value]?
                 try editor.query("SELECT * FROM \(row.table) WHERE ID = ?", [.text(row.id)]) { current = $0.values() }
-                if current?.withoutBookkeeping != row.after?.withoutBookkeeping {
+                let unchanged = if let after = row.after {
+                    current.map { current in row.changedColumns.allSatisfy { current[$0] == after[$0] } } ?? false
+                } else {
+                    current == nil
+                }
+                if !unchanged {
                     throw CannotRevert(reason: row.after == nil
                         ? "\(description(of: row.table).capitalizedFirst) this change removed has been added back since, so it can\u{2019}t be reverted."
                         : "\(description(of: row.table).capitalizedFirst) this change affected has been changed since, so reverting would overwrite that.")
@@ -186,8 +191,7 @@ extension RekordboxLibrary {
             }
 
             for row in changes.rows {
-                guard let before = row.before else { continue }
-                try editor.restore(row.table, before, replacing: row.after != nil)
+                try editor.restore(row)
             }
         }.updateCount
     }
@@ -283,6 +287,12 @@ public struct ChangeSet: Hashable, Sendable {
         var before: [String: SQLiteDatabase.Value]?
         /// The row after the edit; `nil` if the edit deleted it.
         var after: [String: SQLiteDatabase.Value]?
+
+        /// The columns the edit changed, apart from the update number and timestamp every edit sets.
+        var changedColumns: [String] {
+            guard let before, let after else { return [] }
+            return before.withoutBookkeeping.keys.filter { before[$0] != after[$0] }.sorted()
+        }
     }
 
     /// A list of tracks, such as a playlist, that the edit renumbered.
@@ -378,19 +388,22 @@ final class Editor {
         }
     }
 
-    /// Writes a recorded row back, as an update if it still exists or an insert if it was deleted,
-    /// with a fresh update number and timestamp.
-    func restore(_ table: String, _ row: [String: SQLiteDatabase.Value], replacing: Bool) throws {
+    /// Puts a recorded row back as it was before the edit, with a fresh update number and
+    /// timestamp: if the edit updated it, just the columns it changed; if it deleted it, the whole row.
+    func restore(_ change: ChangeSet.RowChange) throws {
+        guard let before = change.before else { return }
+        let changed = change.changedColumns
+        if change.after != nil, changed.isEmpty { return }
         updateCount += 1
-        var row = row
-        if row["rb_local_usn"] != nil { row["rb_local_usn"] = .int(updateCount) }
-        if row["updated_at"] != nil { row["updated_at"] = .text(now) }
+        var row = change.after == nil ? before : before.filter { changed.contains($0.key) }
+        if before["rb_local_usn"] != nil { row["rb_local_usn"] = .int(updateCount) }
+        if before["updated_at"] != nil { row["updated_at"] = .text(now) }
         let columns = row.keys.sorted()
-        if replacing {
-            let assignments = columns.filter { $0 != "ID" }
+        let table = change.table
+        if change.after != nil {
             try database.execute(
-                "UPDATE \(table) SET \(assignments.map { "`\($0)` = ?" }.joined(separator: ", ")) WHERE ID = ?",
-                assignments.map { row[$0]! } + [row["ID"]!]
+                "UPDATE \(table) SET \(columns.map { "`\($0)` = ?" }.joined(separator: ", ")) WHERE ID = ?",
+                columns.map { row[$0]! } + [before["ID"]!]
             )
         } else {
             try database.execute(

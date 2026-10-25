@@ -13,7 +13,8 @@ struct LibrarySessionTests {
         fixture = try LibraryFixture()
     }
 
-    /// Files for tests: backups go in the fixture's folder, and "the Trash" is a folder there too.
+    /// Files for tests: backups go in the fixture's folder (once per session, as with the real
+    /// operations), and "the Trash" is a folder there too.
     private func files(
         backUp: (@Sendable (URL) throws -> Void)? = nil,
         moveToTrash: (@Sendable ([URL]) -> (trashed: [TrashedFile], failures: [String]))? = nil
@@ -21,7 +22,7 @@ struct LibrarySessionTests {
         let backups = fixture.folder.appending(path: "Backups")
         let trash = fixture.folder.appending(path: "Trash")
         return FileOperations(
-            backUp: backUp ?? { try FileOperations.backUp($0, into: backups, keeping: 10) },
+            backUp: backUp ?? FileOperations.live(backupsDirectory: backups).backUp,
             moveToTrash: moveToTrash ?? { paths in
                 FileOperations.moveFiles(paths) { file in
                     try FileManager.default.createDirectory(at: trash, withIntermediateDirectories: true)
@@ -207,12 +208,26 @@ struct LibrarySessionTests {
         let session = try session()
         session.setColor(rhythmic, forTrackIDs: [LibraryFixture.copperSun])
         try await session.applyPendingChanges()
-        // Rekordbox changes the same track.
-        try fixture.database.execute("UPDATE djmdContent SET Rating = 2 WHERE ID = '\(LibraryFixture.copperSun)'")
+        // Rekordbox changes the same track's colour.
+        try fixture.database.execute("UPDATE djmdContent SET ColorID = '5' WHERE ID = '\(LibraryFixture.copperSun)'")
 
         await #expect(throws: RekordboxLibrary.CannotRevert.self) { try await session.undo() }
         #expect(session.undoActionName == "Apply Changes")
         #expect(!session.canRedo)
+        #expect(try savedColor(of: LibraryFixture.copperSun) == melodic)
+    }
+
+    @Test func aConflictWhenRedoingReloadsSoRedoingAgainWorks() async throws {
+        let session = try session()
+        session.setColor(rhythmic, forTrackIDs: [LibraryFixture.copperSun])
+        try await session.applyPendingChanges()
+        try await session.undo()
+        try fixture.database.execute("UPDATE agentRegistry SET int_1 = 500 WHERE registry_id = 'localUpdateCount'")
+
+        await #expect(throws: RekordboxLibrary.LibraryChanged.self) { try await session.redo() }
+        #expect(session.savedLibrary.updateCount == 500)
+        #expect(session.redoActionName == "Apply Changes")
+        try await session.redo()
         #expect(try savedColor(of: LibraryFixture.copperSun) == rhythmic)
     }
 
@@ -393,5 +408,24 @@ struct LibrarySessionTests {
         for snapshot in snapshots {
             #expect(FileManager.default.fileExists(atPath: library.appending(path: snapshot).appending(path: "master.db").path))
         }
+    }
+
+    @Test func aFileWithSomethingElseInItsPlaceIsReportedNotRestored() throws {
+        let original = fixture.folder.appending(path: "Night Drive.mp3")
+        let inTrash = fixture.folder.appending(path: "Trash Night Drive.mp3")
+        try Data("trashed".utf8).write(to: inTrash)
+        try Data("new".utf8).write(to: original)
+
+        let failures = FileOperations.restore([TrashedFile(original: original, inTrash: inTrash)])
+        #expect(failures == ["Night Drive.mp3"])
+        #expect(FileManager.default.fileExists(atPath: inTrash.path))
+    }
+
+    @Test func aFileMovedWithoutANewLocationIsAFailure() throws {
+        let file = fixture.folder.appending(path: "Night Drive.mp3")
+        try Data("audio".utf8).write(to: file)
+        let (trashed, failures) = FileOperations.moveFiles([file]) { _ in nil }
+        #expect(trashed.isEmpty)
+        #expect(failures == ["Night Drive.mp3"])
     }
 }

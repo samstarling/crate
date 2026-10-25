@@ -171,7 +171,7 @@ final class LibraryModel {
         } catch is RekordboxLibrary.LibraryChanged {
             alert = AppAlert(
                 title: "Your Library Has Changed",
-                message: "Your Rekordbox library has changed since Crate loaded it, probably in Rekordbox, so nothing was changed. Crate has reloaded it, and your changes are still pending: review them in Changes, then try again."
+                message: "Your Rekordbox library has changed since Crate loaded it, probably in Rekordbox, so nothing was changed. Crate has reloaded it, so check your changes in Changes, then try again."
             )
         } catch {
             alert = AppAlert(title: failureTitle, message: error.localizedDescription)
