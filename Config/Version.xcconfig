@@ -1,4 +1,4 @@
 // The version is bumped by release-please from Conventional Commits; don't edit it by hand.
 // CI overrides CURRENT_PROJECT_VERSION with the workflow run number.
-MARKETING_VERSION = 0.0.0 // x-release-please-version
+MARKETING_VERSION = 0.1.0 // x-release-please-version
 CURRENT_PROJECT_VERSION = 1
