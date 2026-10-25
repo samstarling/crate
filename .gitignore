@@ -10,3 +10,9 @@ DerivedData/
 
 # Claude Code per-user settings
 .claude/settings.local.json
+
+# Per-developer build setting overrides
+Config/Local.xcconfig
+
+# Release packaging output
+dist/

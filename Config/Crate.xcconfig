@@ -1,0 +1,9 @@
+// Base configuration for the Crate app target.
+#include "Version.xcconfig"
+
+DEVELOPMENT_TEAM = WDE56YCGHE
+ENABLE_HARDENED_RUNTIME = YES
+INFOPLIST_KEY_NSHumanReadableCopyright = Copyright © 2026 Sam Starling. MIT Licence.
+
+// Contributors can override settings (e.g. DEVELOPMENT_TEAM) here without touching the project.
+#include? "Local.xcconfig"
